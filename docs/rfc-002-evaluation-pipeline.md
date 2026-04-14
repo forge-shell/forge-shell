@@ -1,4 +1,4 @@
-# RFC-002 — Evaluation Pipeline & Platform Lowering
+# RFC-002 — Evaluation Pipeline & Platform Backend
 
 | Field          | Value                        |
 |----------------|------------------------------|
@@ -19,6 +19,7 @@ pipeline is a series of pure transformations, each producing a new immutable
 data structure. Type checking is a dedicated stage. Errors are collected
 within each pass and halt the pipeline between passes. The `ExecutionPlan` is
 serialisable by design, enabling RFC-008 plan caching without retrofitting.
+OS-specific behaviour is fully isolated behind the `PlatformBackend` trait.
 
 ---
 
@@ -48,7 +49,9 @@ Source (.fgs)
      ↓
  HIR Lowering         — structural transformation    [forge-lang/hir]
      ↓
- Platform Lowering    — HIR → ExecutionPlan          [forge-lower]
+ PlatformBackend      — HIR → ExecutionPlan          [forge-backend]
+   ├── UnixBackend    — Linux + macOS                [forge-backend/unix]
+   └── WindowsBackend — Windows                      [forge-backend/windows]
      ↓
  Execution Engine     — full plan execution          [forge-engine]
 ```
@@ -73,6 +76,7 @@ Each stage:
 - Tokenises integer base prefixes: `0x`, `0o`, `0b`
 - Tokenises numeric separators: `1_000_000`
 - Tokenises `#!forge:` directive lines in the script header
+- Tokenises invocation forms: positional, `--flag`, named arguments
 
 ---
 
@@ -84,12 +88,17 @@ Each stage:
 - Recursive descent parser
 - Produces a fully-formed AST on success
 - AST is **immutable after construction** — no subsequent pass mutates it
-- Parses script header directives into a `ScriptMeta` node attached to the root
-- Parses all syntax defined in RFC-001:
-  - Literals, bindings, control flow, functions, structs, enums
-  - Imports and module declarations
-  - `spawn`, `join!`, `Context` concurrency syntax
-  - Per-expression overflow operators `+|`, `+%`, `-|`, `-%`, `*|`, `*%`
+- Parses script header directives into a `ScriptMeta` node at the root
+- Expands all three invocation forms to canonical named-argument form:
+
+```
+ls /home/user --show_hidden --sort name
+        ↓  parser expansion
+ls path: p"/home/user", show_hidden: true, sort: "name"
+```
+
+- Applies positional type inference rules (RFC-001 Section 17)
+- Parses all syntax defined in RFC-001
 
 ---
 
@@ -103,8 +112,7 @@ Each stage:
 - Collects **all** type errors in a single pass — not fail-fast
 - Uses **poison values** (`TyKind::Poison`) when an error is found, allowing
   the pass to continue without cascading noise errors
-- If any errors are collected, the pipeline halts after this stage — HIR
-  lowering never runs on invalid input
+- If any errors are collected, the pipeline halts after this stage
 
 **Responsibilities:**
 - Type inference for all literal types
@@ -113,6 +121,7 @@ Each stage:
 - Overflow operator type checking (`+|`, `+%`)
 - `spawn` / `join!` return type inference
 - `Context` usage validation
+- Invocation argument type validation
 
 ---
 
@@ -126,11 +135,11 @@ Each stage:
 - Scope flattening
 - Desugaring: `for` loops, `?` operator, `join!` macro
 - Produces a simpler, more regular IR than the AST
-- HIR nodes carry resolved types from the type checker — no type inference here
+- HIR nodes carry resolved types from the type checker
 
 ---
 
-### 6. Platform Lowering — `forge-lower`
+### 6. Platform Backend — `forge-backend`
 
 **Input:** `HIR`
 **Output:** `ExecutionPlan`
@@ -138,16 +147,37 @@ Each stage:
 - Backend selected once at process startup based on the host OS
 - All OS-specific behaviour is isolated here — no platform logic leaks into
   higher stages
-- Implemented behind the `PlatformLowering` trait:
+- Implemented behind the `PlatformBackend` trait:
 
 ```rust
-pub trait PlatformLowering {
-    fn lower(&self, hir: &HIR) -> Result<ExecutionPlan, Vec<Diagnostic>>;
+pub trait PlatformBackend {
+    fn execute(&self, plan: &ExecutionPlan) -> Result<StructuredOutput, CommandError>;
 }
+
+pub struct UnixBackend;
+pub struct WindowsBackend;
+
+impl PlatformBackend for UnixBackend { ... }
+impl PlatformBackend for WindowsBackend { ... }
 ```
 
-- Concrete backends: `UnixLowering` (Linux, macOS), `WindowsLowering`
-- The `ExecutionPlan` is the only artifact that crosses the platform boundary
+**Crate structure:**
+
+```
+forge-backend/          — PlatformBackend trait + shared types
+forge-backend/unix      — UnixBackend (Linux + macOS)
+forge-backend/windows   — WindowsBackend
+```
+
+**Built-in command backend implementations:**
+
+| Command | UnixBackend | WindowsBackend |
+|---|---|---|
+| `ls` | `readdir` + dotfile convention | `FindFirstFile` + hidden attribute |
+| `stat` | `stat(2)` syscall, Unix rwx | `GetFileAttributesEx`, ACL model |
+| `ping` | Raw ICMP socket | `IcmpSendEcho` Win32 API |
+| `env` | Colon-separated `$PATH` | Semicolon-separated `%PATH%`, case-insensitive |
+| `find` | `walkdir` — symlink-aware | `walkdir` — junction-aware |
 
 ---
 
@@ -183,6 +213,8 @@ pub enum ContextSpec {
 - No `Box<dyn Trait>` — plain enums and structs only
 - All nodes derive `serde::Serialize` and `serde::Deserialize`
 - Target serialisation format: `postcard` (RFC-008)
+- v1 ships without caching — pipeline always runs end to end
+- RFC-008 adds caching on top — `ExecutionPlan` is ready by construction
 
 ---
 
@@ -196,14 +228,33 @@ pub enum ContextSpec {
 - Stateless between runs — no cached intermediate execution state
 - Dispatches `Op::Spawn` and `Op::Join` to the concurrency runtime
 - Dispatches `Op::WithContext` with timeout/cancel propagation
-- Delegates OS-native process spawning to `forge-lower` backends
+- Delegates OS-native process spawning to `forge-backend` implementations
+- Selects `OutputMode` based on context:
 
-**Incremental re-evaluation — explicit non-goal for v1:**
-Shell scripts interact with file system, environment, and network state that
-cannot be assumed stable between runs. Safely skipping execution steps
-requires hermetic sandboxing and explicit dependency tracking — a separate
-system, not a bolt-on. Deferred to post-v1 as a dedicated RFC if demand
-exists.
+```rust
+pub enum OutputMode {
+    RichTerminal,  // colours, tables, icons — interactive terminal
+    PlainText,     // piped — no formatting
+    Structured,    // StructuredOutput envelope — AI/MCP context
+}
+
+pub struct CommandContext {
+    pub output_mode: OutputMode,
+    pub platform:    Platform,
+    pub working_dir: PathBuf,
+}
+```
+
+**Output mode selection:**
+
+| Context | Output mode |
+|---|---|
+| Interactive terminal (TTY) | `RichTerminal` |
+| Piped | `PlainText` |
+| AI/MCP agent context | `Structured` |
+| Explicit `--output json` | `Structured` |
+
+**Incremental re-evaluation — explicit non-goal for v1.**
 
 ---
 
@@ -215,75 +266,63 @@ Every pass returns:
 Result<Output, Vec<Diagnostic>>
 ```
 
-The `Diagnostic` type is defined in `forge-lang/diagnostics` and shared across
-all passes:
+The `Diagnostic` type is defined in `forge-lang/diagnostics`:
 
 ```rust
 pub struct Diagnostic {
-    pub code:    ErrorCode,   // e.g. E001
-    pub message: String,      // human-readable description
-    pub span:    Span,        // file, line, column
-    pub help:    Option<String>, // actionable suggestion
-    pub notes:   Vec<String>, // additional context
+    pub code:    ErrorCode,
+    pub message: String,
+    pub span:    Span,
+    pub help:    Option<String>,
+    pub notes:   Vec<String>,
 }
 ```
 
 **Error surfacing rules:**
 - Within a pass: collect all errors, continue with poison values
-- Between passes: if `Vec<Diagnostic>` is non-empty, halt — do not run the
-  next stage
-- Final error report: all diagnostics from all completed passes, rendered
-  together
+- Between passes: if `Vec<Diagnostic>` is non-empty, halt
+- Final report: all diagnostics from all completed passes, rendered together
 
 ---
 
 ## Drawbacks
 
-- **Immutable pipeline adds allocation overhead.** Each stage allocates a new
-  data structure rather than mutating in place. For large scripts this may be
-  measurable — mitigated by RFC-008 plan caching which amortises the cost
-  across runs.
-- **Dedicated type checker stage adds complexity.** A combined HIR + typeck
-  pass would be simpler to implement initially — but produces worse errors and
-  is harder to test in isolation.
+- **Immutable pipeline adds allocation overhead.** Mitigated by RFC-008 plan
+  caching which amortises the cost across runs.
+- **Dedicated type checker stage adds complexity.** Worth it for error quality
+  and testability.
+- **Three invocation forms add parser complexity.** The expansion layer must
+  be correct and consistent across all 32 built-in commands.
 
 ---
 
 ## Alternatives Considered
 
 ### Alternative A — Type checking inside HIR lowering
-
-**Rejected because:** Mixing semantic validation with structural
-transformation produces a pass that is hard to test, hard to debug, and
-produces one error at a time. A dedicated `forge-lang/typeck` crate with a
-single responsibility is worth the extra stage.
+**Rejected:** Mixed concerns, one error at a time, hard to test in isolation.
 
 ### Alternative B — Mutable AST with annotating passes
-
-**Rejected because:** A mutable shared AST in Rust requires `Arc<Mutex<...>>`
-throughout, fighting the borrow checker at every turn. Immutable data passed
-between owned stages is idiomatic Rust and enables concurrent pass execution.
+**Rejected:** Requires `Arc<Mutex<...>>` throughout — fights Rust's ownership
+model. Immutable data passed between owned stages is idiomatic.
 
 ### Alternative C — Fail-fast error handling
-
-**Rejected because:** Reporting one error at a time forces the developer to
-fix and recompile repeatedly. Collecting all errors within a pass and
-reporting them together — as Rust, TypeScript, and Go do — saves significant
-iteration time.
+**Rejected:** One error at a time forces repeated recompilation. Collecting
+all errors within a pass saves significant iteration time.
 
 ### Alternative D — Incremental re-evaluation in v1
+**Rejected:** Correctness trumps optimisation. Scripts are not pure functions.
+v1 is boring and correct.
 
-**Rejected because:** Correctness trumps optimisation. Scripts are not pure
-functions — file system, environment, and network state cannot be assumed
-stable. Getting incremental execution wrong silently produces incorrect
-results. v1 is boring and correct.
+### Alternative E — `PlatformLowering` as trait name
+**Rejected:** Jargon-heavy. `PlatformBackend` is universally understood in
+systems programming and reads naturally with `UnixBackend` / `WindowsBackend`
+as concrete implementations.
 
 ---
 
 ## Unresolved Questions
 
-All previously unresolved questions have been resolved. See resolution summary
-below.
+All previously unresolved questions have been resolved.
 
 | ID | Question | Resolution |
 |---|---|---|
@@ -302,22 +341,21 @@ below.
 | Crate | Responsibility |
 |---|---|
 | `forge-lang/lexer` | Tokeniser |
-| `forge-lang/parser` | Recursive descent parser, AST construction |
+| `forge-lang/parser` | Recursive descent parser, AST, invocation expansion |
 | `forge-lang/ast` | AST node type definitions |
 | `forge-lang/typeck` | Type checker, typed AST |
-| `forge-lang/hir` | HIR node definitions, HIR lowering pass |
+| `forge-lang/hir` | HIR node definitions, HIR lowering |
 | `forge-lang/diagnostics` | Shared `Diagnostic` type, error rendering |
-| `forge-lower` | `PlatformLowering` trait, `Op` enum, `ExecutionPlan` |
-| `forge-lower/unix` | Unix backend (Linux + macOS) |
-| `forge-lower/windows` | Windows backend |
-| `forge-engine` | Execution engine |
+| `forge-backend` | `PlatformBackend` trait, `Op` enum, `ExecutionPlan` |
+| `forge-backend/unix` | UnixBackend (Linux + macOS) |
+| `forge-backend/windows` | WindowsBackend |
+| `forge-engine` | Execution engine, output mode selection |
 
 ### Dependencies
 
-- Requires RFC-001 to be accepted first — the pipeline exists to evaluate
-  ForgeScript as defined in RFC-001.
-- RFC-008 (Plan Caching) depends on this RFC — specifically the serialisable
-  `ExecutionPlan` defined here.
+- Requires RFC-001 to be accepted first.
+- RFC-003 (Built-in Commands) depends on `PlatformBackend` defined here.
+- RFC-008 (Plan Caching) depends on the serialisable `ExecutionPlan` defined here.
 
 ### Milestones
 
@@ -326,13 +364,14 @@ below.
 3. Implement `forge-lang/parser` — expressions, bindings, control flow
 4. Implement `forge-lang/parser` — functions, structs, enums, imports
 5. Implement `forge-lang/parser` — concurrency syntax, overflow operators
-6. Implement `forge-lang/typeck` — type inference, poison values, diagnostic collection
-7. Implement `forge-lang/hir` — name resolution, scope flattening, desugaring
-8. Implement `forge-lower` — `PlatformLowering` trait and `Op` enum
-9. Implement `forge-lower/unix` — Unix backend
-10. Implement `forge-lower/windows` — Windows backend
-11. Implement `forge-engine` — full plan execution, concurrency dispatch
-12. Integration tests for full pipeline on ubuntu-latest, macos-latest, windows-latest
+6. Implement `forge-lang/parser` — invocation form expansion and type inference
+7. Implement `forge-lang/typeck` — type inference, poison values, diagnostics
+8. Implement `forge-lang/hir` — name resolution, scope flattening, desugaring
+9. Implement `forge-backend` — `PlatformBackend` trait and `Op` enum
+10. Implement `forge-backend/unix` — all 32 built-in Unix implementations
+11. Implement `forge-backend/windows` — all 32 built-in Windows implementations
+12. Implement `forge-engine` — full plan execution, output mode selection
+13. Integration tests on ubuntu-latest, macos-latest, windows-latest
 
 ---
 
@@ -343,4 +382,5 @@ below.
 - [Nushell Engine](https://github.com/nushell/nushell/tree/main/crates/nu-engine)
 - [Postcard Serialisation Format](https://github.com/jamesmunns/postcard)
 - [RFC-001 — ForgeScript Language Syntax & Type System](./RFC-001-forgescript-syntax.md)
+- [RFC-003 — Built-in Command Specification](./RFC-003-builtin-commands.md)
 - [RFC-008 — Plan Caching & AOT Compilation](./RFC-008-plan-caching-aot.md)
