@@ -16,9 +16,9 @@
 ForgeScript (`.fgs`) is the native scripting language of Forge Shell. It is a
 statically-typed, expression-oriented language designed for cross-platform
 shell scripting. This RFC defines the core syntax, primitive types, composite
-types, control flow, functions, error handling, the module system, and
-concurrency primitives. ForgeScript is not POSIX sh. It makes no attempt at
-POSIX compatibility.
+types, control flow, functions, error handling, the module system, command
+invocation syntax, and concurrency primitives. ForgeScript is not POSIX sh.
+It makes no attempt at POSIX compatibility.
 
 ---
 
@@ -45,7 +45,8 @@ ForgeScript is designed from first principles with three goals:
 ### 1. File Format
 
 - Extension: `.fgs`
-- Encoding: UTF-8. BOM is stripped silently. UTF-16 is rejected with a clear error.
+- Encoding: UTF-8. BOM is stripped silently. UTF-16 is rejected with a clear
+  error.
 - Line endings: LF. CRLF is normalised by the lexer before tokenisation.
 - Committed with LF enforced via `.gitattributes`.
 
@@ -63,8 +64,7 @@ directives, parsed by the `forge` runtime on all platforms.
 #!forge:description = "Deploy script for the production environment"
 #!forge:author      = "Ajitem Sahasrabuddhe"
 #!forge:overflow    = "saturate"
-
-# Script body begins here
+#!forge:override    = "ls"
 ```
 
 **Rules:**
@@ -83,6 +83,7 @@ directives, parsed by the `forge` runtime on all platforms.
 | `description` | string | — |
 | `author` | string | — |
 | `overflow` | `"panic"` \| `"saturate"` \| `"wrap"` | `"panic"` |
+| `override` | built-in command name | — |
 
 ---
 
@@ -327,14 +328,12 @@ let (build, lint, test) = join! {
 
 #### `Context` — cancellation and timeouts
 
-Directly modelled on Go's `context` package:
-
 ```forge
 # Timeout-bounded execution
 let ctx = Context::with_timeout(d"30s")
 
 let result = spawn(ctx) {
-    fetch(u"https://api.forge-shell.dev/status")
+    fetch url: u"https://api.forge-shell.dev/status"
 }
 
 match result {
@@ -349,7 +348,7 @@ spawn(ctx) {
     long_running_task()
 }
 
-cancel()   # cancel the task explicitly
+cancel()
 ```
 
 **v1 concurrency primitives:**
@@ -420,14 +419,6 @@ error[E001]: circular import detected
 The ForgeScript standard library is **compiled directly into the `forge`
 binary**. It is not distributed as plugins and has no install step.
 
-**Rationale:**
-- Stdlib is infrastructure — it must be available unconditionally, without
-  network access or registry availability.
-- The WASM plugin sandbox is the correct trust boundary for third-party code,
-  not for stdlib. `forge::fs` requires raw OS access; it cannot run sandboxed.
-- Distributing stdlib as plugins creates a bootstrap problem — the registry
-  itself depends on stdlib modules.
-
 **v1 stdlib modules:**
 
 | Module | Responsibility |
@@ -448,6 +439,90 @@ binary**. It is not distributed as plugins and has no install step.
 let mut const fn struct enum match if else for while loop
 break continue return import from as in Ok Err Some None
 true false set export unset spawn exec path join context
+cancel watch bench hash
+```
+
+---
+
+### 16. Command Invocation Syntax
+
+ForgeScript supports three equivalent invocation forms for built-in commands.
+All three are valid in both `.fgs` scripts and the interactive REPL. All three
+expand to the same typed representation before parsing.
+
+#### Form 1 — Positional arguments
+
+```forge
+ls /home/user
+cd ~/projects
+fetch https://api.forge-shell.dev/status
+```
+
+#### Form 2 — POSIX-style flags
+
+```forge
+ls /home/user --show_hidden --sort name
+cat README.md --render
+fetch https://api.forge-shell.dev --output json
+```
+
+**Boolean flag conventions:**
+- `--flag` alone → `true`
+- `--no-flag` → `false`
+
+#### Form 3 — Named typed arguments
+
+```forge
+ls path: p"/home/user", show_hidden: true, sort: "name"
+cat path: p"README.md", render: true
+fetch url: u"https://api.forge-shell.dev", output: "json"
+```
+
+#### Mixed forms
+
+```forge
+ls /home/user --show_hidden       # positional + flag
+ls /home/user, show_hidden: true  # positional + named
+```
+
+#### Expansion — all forms are equivalent
+
+```
+ls /home/user --show_hidden --sort name
+        ↓  parser expansion
+ls path: p"/home/user", show_hidden: true, sort: "name"
+        ↓  type checker
+ExecutionPlan::Ls { path: p"/home/user", show_hidden: true, sort: "name" }
+```
+
+---
+
+### 17. Positional Type Inference Rules
+
+When a bare unquoted value is provided positionally, the parser infers its
+type using the following rules in order:
+
+| What you write | Inferred type | Rule |
+|---|---|---|
+| `/home/user`, `./file`, `~/config` | `path` | Starts with `/`, `./`, `~` |
+| `https://...`, `http://...` | `url` | Starts with URL scheme |
+| `42`, `-7`, `0xFF`, `0b101` | `int` | Numeric literal |
+| `3.14`, `-0.5` | `float` | Floating point literal |
+| `true` / `false` | `bool` | Boolean keyword |
+| `"hello world"` | `str` | Quoted string |
+| `home`, `config`, `src` | Parameter type | Fallback — driven by receiving parameter's declared type |
+| Anything else unquoted | Compile-time error | Ambiguous — no inference possible |
+
+**The fallback rule:**
+If a bare unquoted value matches none of the above patterns, the parser
+inspects the receiving parameter's declared type and infers accordingly. If
+the parameter type is `path` — the value is wrapped as `p"..."`. If the
+parameter type is `str` or ambiguous — a compile-time error is raised and the
+user must be explicit.
+
+```forge
+cd home        # "home" → p"home" — cd's first param is typed path
+some_cmd foo   # error if foo's receiving param is str — must write "foo"
 ```
 
 ---
@@ -455,10 +530,9 @@ true false set export unset spawn exec path join context
 ## Drawbacks
 
 - **Not POSIX compatible** — existing shell scripts cannot be run as `.fgs`
-  files. Migration requires rewriting. This is intentional but is a real
-  adoption friction point.
-- **Type system adds verbosity** — simple one-liner scripts require more
-  ceremony than equivalent bash.
+  files. Migration requires rewriting via `forge migrate`.
+- **Three invocation forms add parser complexity** — the expansion layer must
+  be correct and consistent across all built-ins.
 - **Prefix literals are unfamiliar** — developers without Rust/Python
   background may need time to internalise `p"..."`, `r"..."`, `u"..."`.
 - **Learning curve** — the `Result`/`Option` model and `spawn`/`join!`
@@ -471,44 +545,40 @@ true false set export unset spawn exec path join context
 
 ### Alternative A — POSIX-compatible syntax with extensions
 
-**Approach:** Start from sh syntax and add types and cross-platform features
-on top.
 **Rejected because:** POSIX syntax carries deep Unix assumptions. Extending it
 cleanly is effectively impossible — every new feature fights the existing
 model.
 
 ### Alternative B — `path()` constructor instead of `p"..."` literal
 
-**Approach:** Use `path("/usr/bin")` as a function-call constructor rather
-than a prefix literal.
 **Rejected because:** A unified prefix literal system (`p"..."`, `r"..."`,
 `u"..."`) enables consistent static validation at parse time and is
-unambiguously a literal rather than a callable. The ergonomic cost of
-`path("/usr/bin")` at volume is significant. The consistency risk of a
-one-off constructor is also real.
+unambiguously a literal rather than a callable.
 
 ### Alternative C — `${var}` string interpolation
 
-**Approach:** Use `${var}` for interpolation, following bash convention.
 **Rejected because:** `$` is environment variable territory in every major
 shell. Overloading it inside strings creates a mental conflict between
 ForgeScript variables and env var lookups.
 
 ### Alternative D — Full async/await
 
-**Approach:** Adopt Rust/JavaScript-style `async fn` and `.await`.
-**Rejected because:** `async` infects the entire call tree — functions must be
-marked `async` to call other `async` functions (the function colouring
-problem). In a scripting language, this is unnecessary friction. The
-`spawn`/`join!` model allows any block to be concurrent without restructuring
-the call tree.
+**Rejected because:** `async` infects the entire call tree — the function
+colouring problem. The `spawn`/`join!` model allows any block to be concurrent
+without restructuring the call tree.
+
+### Alternative E — Named arguments only, no `--flags` or positional forms
+
+**Rejected because:** At the interactive prompt, named arguments are verbose.
+A unified syntax that supports all three forms — positional, `--flags`, and
+named — gives the best experience at both the prompt and in scripts without
+maintaining two separate parsers.
 
 ---
 
 ## Unresolved Questions
 
-All previously unresolved questions have been resolved. See resolution summary
-below.
+All previously unresolved questions have been resolved.
 
 | ID | Question | Resolution |
 |---|---|---|
@@ -525,30 +595,40 @@ below.
 
 ### Affected Crates
 
-- `forge-lang/lexer` — tokeniser for all literal types, prefix sigils, operators, keywords
-- `forge-lang/parser` — recursive descent parser producing AST nodes
-- `forge-lang/ast` — AST node type definitions
-- `forge-lang/hir` — type resolution, name resolution, HIR lowering
-- `forge-lang/resolver` — import graph construction, circular import detection
+| Crate | Responsibility |
+|---|---|
+| `forge-lang/lexer` | Tokeniser — all literal types, prefix sigils, operators, keywords |
+| `forge-lang/parser` | Recursive descent parser, AST construction, invocation form expansion |
+| `forge-lang/ast` | AST node type definitions |
+| `forge-lang/typeck` | Type checker, typed AST |
+| `forge-lang/hir` | HIR node definitions, HIR lowering pass |
+| `forge-lang/resolver` | Import graph construction, circular import detection |
+| `forge-lang/diagnostics` | Shared `Diagnostic` type, error rendering |
+| `forge-backend` | `PlatformBackend` trait, `ExecutionPlan`, `Op` enum |
+| `forge-backend/unix` | Unix backend (Linux + macOS) |
+| `forge-backend/windows` | Windows backend |
+| `forge-engine` | Execution engine |
 
 ### Dependencies
 
 - No RFC dependencies — this is the foundational RFC.
 - RFC-002 (Evaluation Pipeline) depends on this RFC being accepted first.
+- RFC-003 (Built-in Commands) depends on Section 16 and 17 of this RFC.
 
 ### Milestones
 
-1. Lexer: tokenise all literal types, prefix sigils (`p"..."`, `r"..."`, `u"..."`), operators, keywords
-2. Lexer: integer base prefixes (`0x`, `0o`, `0b`), numeric separators
+1. Lexer: all literal types, prefix sigils, operators, keywords
+2. Lexer: integer base prefixes, numeric separators, `#!forge:` directives
 3. Parser: expressions, let bindings, control flow
-4. Parser: functions, structs, enums
-5. Parser: imports and module declarations
-6. Parser: `spawn`, `join!`, `Context` concurrency syntax
-7. AST: complete node definitions for all syntax above
-8. HIR: type inference for primitives and composites
-9. HIR: name resolution for variables, functions, modules
-10. Resolver: import graph construction, DFS cycle detection, error reporting
-11. Integration tests for all syntax forms on ubuntu-latest, macos-latest, windows-latest
+4. Parser: functions, structs, enums, imports
+5. Parser: concurrency syntax, overflow operators
+6. Parser: invocation form expansion — positional, `--flags`, named → canonical form
+7. Parser: positional type inference rules
+8. AST: complete node definitions
+9. Type checker: type inference, poison values, diagnostic collection
+10. HIR: name resolution, scope flattening, desugaring
+11. Resolver: import graph, DFS cycle detection, error reporting
+12. Integration tests on ubuntu-latest, macos-latest, windows-latest
 
 ---
 
@@ -562,3 +642,6 @@ below.
 - [Go Context Package](https://pkg.go.dev/context)
 - [Go Concurrency Patterns](https://go.dev/blog/pipelines)
 - [Rust Saturating Arithmetic](https://doc.rust-lang.org/std/primitive.i64.html#method.saturating_add)
+- [bat — A cat clone with wings](https://github.com/sharkdp/bat)
+- [RFC-002 — Evaluation Pipeline](./RFC-002-evaluation-pipeline.md)
+- [RFC-003 — Built-in Command Specification](./RFC-003-builtin-commands.md)
