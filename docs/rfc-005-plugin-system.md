@@ -2,10 +2,10 @@
 
 | Field          | Value                        |
 |----------------|------------------------------|
-| Status         | Draft                        |
+| Status         | **In Review**                |
 | Author         | Ajitem Sahasrabuddhe         |
 | Created        | 2026-04-09                   |
-| Last Updated   | 2026-04-09                   |
+| Last Updated   | 2026-04-15                   |
 | Supersedes     | —                            |
 | Superseded By  | —                            |
 
@@ -15,8 +15,11 @@
 
 This RFC defines the Forge Shell plugin system — a WebAssembly (WASM) based
 extensibility model that allows third-party developers to add commands,
-completions, prompt hooks, and output formatters to Forge Shell. Plugins are
-sandboxed via a capability model and run identically on all three platforms.
+completions, prompt segments, and aliases to Forge Shell. Plugins are
+sandboxed via a capability model, communicate with the host exclusively via
+postcard serialisation, and run identically on all three platforms. The host
+owns all output rendering decisions — plugins are first-class citizens
+indistinguishable from built-in commands at the output layer.
 
 ---
 
@@ -26,359 +29,434 @@ No shell can anticipate every workflow. Forge Shell needs a safe, cross-
 platform, language-agnostic extension mechanism. The requirements are:
 
 - **Cross-platform** — a plugin built once runs on Linux, macOS, and Windows
-- **Sandboxed** — plugins cannot access resources beyond their declared permissions
+- **Sandboxed** — plugins cannot access resources beyond their declared capabilities
 - **Language-agnostic** — plugins can be written in any WASM-targeting language
-- **Versioned** — the plugin API is stable and independently versioned
-- **Discoverable** — plugins are installed from a central registry
+- **Versioned** — the plugin ABI is stable and independently versioned
+- **Discoverable** — plugins are found via a lightweight static index
+- **Safe** — resource limits protect the shell from buggy or malicious plugins
 
-WebAssembly satisfies all five requirements. It is the only viable option
-that meets all of them simultaneously.
+WebAssembly via `wasmtime` satisfies all six requirements simultaneously.
 
 ---
 
 ## Design
 
-### 1. WASM as the Plugin Runtime
-
-Plugins are compiled to WASM modules (`.wasm`). Forge Shell hosts them via
-`wasmtime` — the same engine used by the Wasmtime project and the Bytecode
-Alliance.
+### 1. Plugin Architecture
 
 ```
-Plugin source (Rust/Go/C/AssemblyScript/...)
-              ↓
-        WASM compiler
-              ↓
-     plugin-name.wasm
-              ↓
-  forge plugin install plugin-name.wasm
-              ↓
-    wasmtime hosts the module
-              ↓
-  Forge Shell invokes exported functions
+forge-shell (host)
+    ├── wasmtime runtime
+    ├── capability enforcement layer
+    ├── resource limit enforcement (fuel metering + memory limits)
+    └── output rendering (owns RichTerminal / PlainText / Structured)
+            ↑ postcard — always
+plugin.wasm
+    ├── plugin logic
+    ├── forge-plugin-sdk (Rust or Go)
+    └── declared capabilities + limits
 ```
 
-The plugin author never needs to write platform-specific code. The `.wasm`
-binary is identical on all three platforms.
+Plugins communicate with the host exclusively via postcard serialisation.
+The host owns all output rendering — `RichTerminal`, `PlainText`, and
+`Structured` (JSON for AI/MCP). Plugins never import `serde_json` and never
+make rendering decisions.
 
 ---
 
-### 2. Plugin Manifest
+### 2. Plugin Manifest — `forge-plugin.toml`
 
-Every plugin ships with a `forge-plugin.toml` manifest:
+Every plugin ships a `forge-plugin.toml` manifest:
 
 ```toml
 [plugin]
 name        = "forge-git"
 version     = "1.2.0"
-description = "First-class Git integration for Forge Shell"
-author      = "Ajitem Sahasrabuddhe"
-homepage    = "https://github.com/forge-shell/forge-git"
+abi         = "1"               # target ABI version
+description = "Git integration for Forge Shell"
+authors     = ["Ajitem Sahasrabuddhe"]
 license     = "MIT"
-min_forge   = "0.1.0"    # minimum Forge Shell version
+homepage    = "https://github.com/forge-shell/forge-git"
 
+# Capabilities — declared at install time, enforced at runtime
 [capabilities]
-exec        = ["git"]          # may spawn only the git binary
-filesystem  = ["read"]         # read-only filesystem access
-network     = false            # no outbound network access
-env         = ["read"]         # may read environment variables
-stdin       = true             # may read from stdin
-stdout      = true             # may write to stdout
-stderr      = true             # may write to stderr
+exec        = ["git"]           # allowed external commands
+filesystem  = "read"            # "none" | "read" | "read-write"
+network     = false             # true | false
+env         = "read"            # "none" | "read" | "read-write"
+
+# Resource limits — within global ceiling
+[limits]
+memory      = "32MB"            # default — omit to use default
+cpu_timeout = "5s"              # default — omit to use default
+
+# Commands provided by this plugin
+[[commands]]
+name        = "git-log"
+description = "Rich git log viewer"
+positional  = ["path"]          # positional argument order
 
 [[commands]]
 name        = "git-status"
-description = "Show working tree status with enhanced output"
-usage       = "git-status [path]"
+description = "Rich git status viewer"
 
-[[completions]]
-command     = "git"
-description = "Completions for git subcommands and flags"
+# Aliases provided by this plugin
+[aliases]
+gst  = "git-status"
+glog = "git-log"
+gl   = "git pull"
+gp   = "git push"
+gco  = "git checkout"
 
-[[hooks]]
-event       = "prompt"
-description = "Adds git branch and status to the prompt"
+# Prompt segments provided by this plugin
+[[prompt.segments]]
+name        = "git"
+description = "Git branch and status"
+
+# Built-in overrides — requires explicit declaration
+overrides   = []                # e.g. ["ls"] to override built-in ls
+
+# Output schemas for custom payload types
+[[output.schemas]]
+command     = "git-log"
+type        = "GitLog"          # Rust type in forge-plugin-sdk shared types
+version     = 1
+
+[[output.schemas]]
+command     = "git-status"
+type        = "GitStatus"
+version     = 1
 ```
 
 ---
 
-### 3. Capability Model
+### 3. ABI Versioning
 
-Capabilities are declared in `forge-plugin.toml` and enforced at the WASM
-boundary by the plugin host. A plugin cannot access any resource not listed
-in its capabilities.
+The plugin ABI is the contract between Forge Shell and every plugin. It is
+versioned as a simple integer — not semver.
 
-#### Available Capabilities
+**Rules:**
+- ABI version incremented only on breaking changes to host function interface
+- Additive changes (new host functions) do not bump the ABI version
+- Forge Shell supports multiple ABI versions simultaneously
+- Deprecation window: minimum 12 months before removing an ABI version
+- Deprecation announced in release notes with a migration guide
+- `forge plugin check` warns if an installed plugin targets a deprecated ABI
+
+**Crate structure:**
+
+```
+forge-plugin/abi/v1    — ABI v1 host implementation
+forge-plugin/abi/v2    — ABI v2 host implementation (when it exists)
+```
+
+---
+
+### 4. Plugin SDK — Separate Repositories
+
+The plugin SDK lives in separate repositories — independent release cadence,
+distinct audience, lighter CI for plugin authors.
+
+| Repository | Purpose |
+|---|---|
+| `github.com/forge-shell/forge-shell` | Main repo |
+| `github.com/forge-shell/forge-plugin-sdk` | Rust plugin SDK |
+| `github.com/forge-shell/forge-plugin-sdk-go` | Go plugin SDK |
+
+**SDK version is pinned to ABI version:**
+- `forge-plugin-sdk v1.x` → targets ABI v1
+- `forge-plugin-sdk v2.x` → targets ABI v2
+
+Community SDKs for other WASM-targeting languages (Zig, C, AssemblyScript)
+are welcome and documented at forge-shell.dev.
+
+---
+
+### 5. Output Architecture — Host Owns All Rendering
+
+Plugins communicate output via postcard-serialised typed data. The host
+detects the `OutputMode` from `CommandContext` and renders accordingly:
+
+```
+Plugin (WASM)
+    ↓  postcard — always, no exceptions
+Forge Shell Host
+    ↓  CommandContext::output_mode
+    ├── RichTerminal  → rich table, colours, icons
+    ├── PlainText     → plain text, no formatting
+    └── Structured    → JSON (AI/MCP consumers — RFC-007)
+```
+
+**Benefits:**
+- Plugins never import `serde_json` — postcard only
+- New output modes automatically supported by all plugins — no plugin updates needed
+- Plugins are indistinguishable from built-ins at the output layer
+- Type information preserved all the way from plugin to host
+
+**Custom output types — shared via SDK:**
+
+```rust
+// forge-plugin-sdk — shared types
+// Plugin serialises with postcard, host deserialises to this type
+#[derive(Serialize, Deserialize)]
+pub struct GitStatus {
+    pub branch:   String,
+    pub ahead:    u32,
+    pub behind:   u32,
+    pub staged:   Vec<GitFile>,
+    pub unstaged: Vec<GitFile>,
+    pub untracked: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GitFile {
+    pub path:   String,
+    pub status: GitFileStatus,
+}
+```
+
+**Host rendering logic** ships alongside the `.wasm` binary in the plugin
+package — the plugin author writes both the WASM logic and the host-side
+rendering for their custom types.
+
+---
+
+### 6. Capability Model
+
+Capabilities are declared in the manifest and enforced at the WASM host level
+by wasmtime — not by the plugin. A plugin cannot access resources beyond its
+declared capabilities regardless of what its code attempts.
 
 | Capability | Values | Description |
 |---|---|---|
-| `exec` | `["cmd1", "cmd2"]` or `["*"]` | Commands the plugin may spawn |
-| `filesystem` | `["read"]`, `["read", "write"]` | Filesystem access level |
-| `filesystem.paths` | `["./", "/tmp"]` | Path restrictions (optional) |
-| `network` | `true` / `false` | Any outbound network access |
-| `network.hosts` | `["api.github.com"]` | Host allowlist (if network = true) |
-| `env` | `["read"]`, `["read", "write"]` | Environment variable access |
-| `env.keys` | `["GITHUB_TOKEN", "HOME"]` | Specific variable allowlist |
-| `stdin` | `true` / `false` | Read from stdin |
-| `stdout` | `true` / `false` | Write to stdout |
-| `stderr` | `true` / `false` | Write to stderr |
+| `exec` | `["git", "kubectl"]` | Allowed external commands — allowlist |
+| `filesystem` | `"none"` / `"read"` / `"read-write"` | Filesystem access level |
+| `network` | `true` / `false` | Network access |
+| `env` | `"none"` / `"read"` / `"read-write"` | Environment variable access |
 
-#### Capability Enforcement
-
-Capabilities are enforced by the `wasmtime` host via WASI preview 2's
-component model. Calls that exceed declared capabilities raise a
-`CapabilityViolation` error — the plugin is terminated and Forge Shell
-reports the violation clearly.
+**Install-time transparency:**
 
 ```
-Error: Plugin 'forge-git' attempted network access to 'api.github.com'
-       but 'network' capability was not declared in forge-plugin.toml.
+Installing: forge-kubectl v2.1.0
+Source:      github.com/ajitem/forge-kubectl
+Verified:    ✅ Reviewed by Forge Shell team
+Capabilities: exec["kubectl", "helm"], filesystem:read, env:read
+Limits:      memory: 64MB (↑ above default 32MB), cpu: 15s (↑ above default 5s)
+             ⚠️  This plugin requests above-default resource limits
+Proceed? [y/N]
+```
 
-       To allow this, add to forge-plugin.toml:
-         [capabilities]
-         network = true
-         network.hosts = ["api.github.com"]
+Above-default resource limits are always surfaced at install time — never a
+runtime surprise.
 
-       Then reinstall the plugin: forge plugin install forge-git
+---
+
+### 7. Resource Limits
+
+**Global ceiling — hard limits enforced by wasmtime, never exceeded:**
+
+| Resource | Default | Global ceiling | On exceed |
+|---|---|---|---|
+| Memory | 32 MB | 256 MB | Default exceeded → warning; ceiling → hard kill |
+| CPU timeout | 5 seconds | 60 seconds | Default exceeded → warning; ceiling → hard kill |
+| Stack depth | 512 KB | 1 MB | Ceiling exceeded → hard kill |
+| File descriptors | 16 | 64 | Ceiling exceeded → hard kill |
+
+**Rationale for defaults:**
+- A shell plugin is not a server process — it must feel interactive
+- 32 MB covers git operations, JSON parsing, template rendering
+- 5 second timeout — operations longer than this feel broken interactively
+- Plugins needing more declare it explicitly in `[limits]`
+
+**Implementation:** wasmtime fuel metering for CPU, wasmtime memory limits
+for allocation — enforced at the WASM host level, not by plugin code.
+
+```toml
+# Plugin that legitimately needs more
+[limits]
+memory      = "128MB"   # e.g. ripgrep indexing large repos
+cpu_timeout = "30s"     # e.g. docker image metadata fetch
 ```
 
 ---
 
-### 4. Plugin API
+### 8. Plugin Distribution — Decentralised Model
 
-The plugin API is a set of host functions that Forge Shell exposes to plugins.
-Plugins call these functions to interact with the shell.
+Forge Shell uses a Go-style decentralised model. No plugin binaries are
+hosted by the Forge Shell project.
 
-#### Host Functions (exposed to plugins)
+**Install resolution — three tiers:**
 
-```rust
-// Forge Shell exposes these to the WASM module
+```
+Tier 1 — Canonical short name (official + verified only)
+  forge-git → plugins.forge-shell.dev/forge-git → github.com/forge-shell/forge-git
 
-// Command registration
-forge_register_command(name: str, description: str, usage: str)
-forge_register_completion(command: str)
-forge_register_hook(event: HookEvent)
+Tier 2 — Publisher namespace (registered publishers)
+  ajitem/forge-kubectl → plugins.forge-shell.dev/ajitem/forge-kubectl → github.com/ajitem/forge-kubectl
 
-// I/O
-forge_write_stdout(data: &[u8])
-forge_write_stderr(data: &[u8])
-forge_read_stdin() -> Vec<u8>
-
-// Process execution (subject to exec capability)
-forge_exec(cmd: str, args: &[str]) -> ExecResult
-
-// Filesystem (subject to filesystem capability)
-forge_fs_read(path: str) -> Result<Vec<u8>>
-forge_fs_write(path: str, data: &[u8]) -> Result<()>
-forge_fs_list(path: str) -> Result<Vec<DirEntry>>
-
-// Environment (subject to env capability)
-forge_env_get(key: str) -> Option<str>
-forge_env_set(key: str, value: str)   // requires env.write capability
-
-// Structured output
-forge_emit_record(record: &Record)    // emit structured data
-forge_emit_table(table: &Table)
+Tier 3 — Direct source URL (no index needed)
+  github.com/ajitem/forge-kubectl@v2.1.0
+  gitlab.com/user/plugin@v1.0.0
 ```
 
-#### Plugin Exports (called by Forge Shell)
-
-```rust
-// Forge Shell calls these on the WASM module
-
-// Lifecycle
-fn forge_plugin_init()              // called once at plugin load
-fn forge_plugin_destroy()           // called at shell exit
-
-// Command execution
-fn forge_run_command(args: &[str]) -> CommandResult
-
-// Completion
-fn forge_complete(partial: str, context: &CompletionContext) -> Vec<Completion>
-
-// Hooks
-fn forge_hook_prompt() -> PromptFragment
-fn forge_hook_pre_exec(cmd: &str) -> HookResult
-fn forge_hook_post_exec(cmd: &str, exit_code: i32) -> HookResult
-```
-
----
-
-### 5. Plugin Installation & Management
+**Install examples:**
 
 ```bash
-# Install from registry
-forge plugin install forge-git
-forge plugin install forge-kubectl
-
-# Install specific version
-forge plugin install forge-git@1.2.0
-
-# Install from local file
-forge plugin install ./my-plugin.wasm
-
-# Install from URL
-forge plugin install https://plugins.forge-shell.dev/forge-git-1.2.0.wasm
-
-# List installed plugins
-forge plugin list
-
-# Show plugin details and declared capabilities
-forge plugin info forge-git
-
-# Update a plugin
-forge plugin update forge-git
-forge plugin update --all
-
-# Remove a plugin
-forge plugin remove forge-git
-
-# Disable without removing
-forge plugin disable forge-git
-forge plugin enable forge-git
+forge plugin install forge-git                         # Tier 1
+forge plugin install forge-git@v1.2.0                  # Tier 1 — pinned
+forge plugin install ajitem/forge-kubectl              # Tier 2
+forge plugin install ajitem/forge-kubectl@v2.0.0       # Tier 2 — pinned
+forge plugin install github.com/user/plugin            # Tier 3
+forge plugin install github.com/user/plugin@v1.0.0     # Tier 3 — pinned
 ```
 
----
+**What Forge Shell hosts — minimally:**
 
-### 6. Plugin Storage
-
-```
-~/.forge/
-├── plugins/
-│   ├── forge-git/
-│   │   ├── forge-plugin.toml     # manifest
-│   │   ├── forge-git.wasm        # compiled plugin
-│   │   └── data/                 # plugin-writable data dir (if filesystem.write)
-│   └── forge-kubectl/
-│       ├── forge-plugin.toml
-│       └── forge-kubectl.wasm
-├── cache/
-└── config.fgs
-```
-
----
-
-### 7. Plugin Registry
-
-The official registry is hosted at `plugins.forge-shell.dev`. It is a simple
-static registry — a JSON index of published plugins.
-
-```json
-{
-  "plugins": [
-    {
-      "name":        "forge-git",
-      "version":     "1.2.0",
-      "description": "First-class Git integration",
-      "author":      "forge-shell",
-      "url":         "https://plugins.forge-shell.dev/forge-git-1.2.0.wasm",
-      "sha256":      "abc123...",
-      "min_forge":   "0.1.0"
-    }
-  ]
-}
-```
-
-All plugin downloads are verified against their declared SHA-256 hash before
-installation. Forge Shell refuses to install a plugin whose hash does not match.
-
----
-
-### 8. First-Party Reference Plugins
-
-Forge Shell ships with two reference plugins that demonstrate the API and
-serve as integration tests:
-
-| Plugin | Commands | Capabilities |
+| Component | What it is | Hosting cost |
 |---|---|---|
-| `forge-git` | `git-status`, `git-log`, `git-branch` | `exec: ["git"]`, `filesystem: ["read"]` |
-| `forge-kubectl` | `kube-ctx`, `kube-pods`, `kube-logs` | `exec: ["kubectl"]`, `env: ["read"]` |
+| `plugins.forge-shell.dev` | Static discovery index | Minimal |
+| `sum.forge-shell.dev` | Append-only hash log — tamper detection | Minimal |
+| `github.com/forge-shell/plugin-index` | TOML index source — PR-based submissions | Zero |
+| Official plugins (`forge-shell/forge-*`) | GitHub repos | Zero |
+
+**Plugin index entry:**
+
+```toml
+# plugin-index/plugins.toml
+
+[[plugin]]
+name       = "forge-git"
+vanity     = "forge-git"                        # canonical short name
+source     = "github.com/forge-shell/forge-git"
+verified   = true
+official   = true
+public_key = "ed25519:AAAA..."
+
+[[plugin]]
+name       = "forge-kubectl"
+vanity     = "ajitem/forge-kubectl"             # publisher namespace
+source     = "github.com/ajitem/forge-kubectl"
+verified   = true
+official   = false
+public_key = "ed25519:BBBB..."
+```
+
+**Publisher namespace registration:**
+
+```toml
+# plugin-index/publishers.toml
+[[publisher]]
+namespace  = "ajitem"
+github     = "ajitem-sahasrabuddhe"
+verified   = true
+public_key = "ed25519:CCCC..."
+```
+
+Namespace ownership prevents typosquatting. Once `ajitem` is claimed, only
+that publisher can register `ajitem/*` vanity URLs.
 
 ---
 
-### 9. Writing a Plugin (Rust Example)
+### 9. Code Signing
 
-```rust
-// forge-plugin SDK crate
-use forge_plugin_sdk::{plugin, command, completion, PromptHook};
+| Plugin tier | Signing | Install behaviour |
+|---|---|---|
+| Official | ✅ Required | Silent — always trusted |
+| Verified | ✅ Required | Silent — badge confirms review + binary integrity |
+| Unverified | ❌ Optional | Warning shown — user confirms |
 
-#[plugin]
-struct GitPlugin;
+**Signing algorithm:** Ed25519
 
-#[command(name = "git-status", description = "Enhanced git status")]
-fn git_status(args: &[String]) -> CommandResult {
-    let output = forge_exec("git", &["status", "--porcelain"])?;
-    // format and emit structured output
-    CommandResult::ok()
-}
+**Signing toolchain:**
 
-#[completion(command = "git")]
-fn git_complete(partial: &str, ctx: &CompletionContext) -> Vec<Completion> {
-    // return completions
-    vec![]
-}
+```bash
+forge plugin keygen                           # generate Ed25519 keypair
+forge plugin sign plugin.wasm --key my.key   # sign → plugin.wasm.sig
+forge plugin verify plugin.wasm              # verify locally before publishing
+```
 
-#[prompt_hook]
-fn prompt_fragment() -> PromptFragment {
-    let branch = forge_exec("git", &["branch", "--show-current"])
-        .ok()
-        .map(|o| o.stdout_string());
-    PromptFragment::new(branch.unwrap_or_default())
-}
+**Public key stored in `plugin-index/plugins.toml`** — verified at install
+time against the downloaded `.wasm` binary. Ensures the installed binary
+matches what was reviewed.
+
+---
+
+### 10. Plugin Lifecycle Commands
+
+```bash
+forge plugin install forge-git              # install
+forge plugin install forge-git@v1.2.0      # install pinned version
+forge plugin remove forge-git              # remove
+forge plugin update forge-git              # update to latest
+forge plugin update --all                  # update all installed plugins
+forge plugin list                          # list installed plugins
+forge plugin search docker                 # search the index
+forge plugin info forge-git                # show manifest details
+forge plugin check                         # check for deprecated ABIs
+forge plugin keygen                        # generate signing keypair
+forge plugin sign plugin.wasm              # sign a plugin binary
+forge plugin verify plugin.wasm            # verify a plugin binary
 ```
 
 ---
 
 ## Drawbacks
 
-- **WASM overhead** — function calls across the WASM boundary have non-trivial
-  overhead. Plugins that make many small calls will be slower than native code.
-- **WASM toolchain requirement** — plugin authors must target WASM. Some
-  languages (e.g. shell scripts themselves) cannot compile to WASM.
+- **WASM toolchain requirement** — plugin authors must target WASM. Shell
+  scripts themselves cannot compile to WASM.
 - **Limited WASI surface** — WASI preview 2 is still maturing. Some OS APIs
   are not yet available in WASM.
-- **Plugin SDK maintenance** — the `forge-plugin-sdk` crate must be maintained
-  and versioned carefully. Breaking changes affect all plugins.
+- **SDK maintenance** — `forge-plugin-sdk` must be versioned carefully.
+  Breaking ABI changes require coordinated SDK releases.
+- **Host rendering per plugin** — plugin authors must write host-side rendering
+  code alongside their WASM binary. More work per plugin, but correct.
 
 ---
 
 ## Alternatives Considered
 
-### Alternative A — Native Dynamic Libraries (.so/.dylib/.dll)
+### Alternative A — Native Dynamic Libraries
 
-**Approach:** Load plugins as native shared libraries.
-**Rejected because:** Native libraries are platform-specific — a `.so` does not
-run on Windows. Cross-platform plugin distribution requires three separate
-builds. No sandbox model exists for native libraries.
+**Rejected:** Platform-specific — `.so` does not run on Windows. No sandbox
+model. Three separate builds per plugin.
 
-### Alternative B — HashiCorp go-plugin (gRPC-based)
+### Alternative B — gRPC-based plugins (HashiCorp go-plugin style)
 
-**Approach:** Plugins are separate processes communicating over gRPC.
-**Rejected because:** Requires Go or a gRPC-capable language. Process-per-plugin
-is heavyweight. Cross-platform distribution still requires platform-specific builds.
+**Rejected:** Requires Go or gRPC. Process-per-plugin is heavyweight.
+Platform-specific builds still required.
 
-### Alternative C — Script Plugins (.fgs files)
+### Alternative C — `.fgs` script plugins
 
-**Approach:** Plugins are `.fgs` scripts.
-**Rejected because:** ForgeScript scripts cannot safely be sandboxed — they have
-full access to the shell's execution model. A malicious `.fgs` plugin could
-spawn arbitrary processes, exfiltrate environment variables, or modify shell
-state.
+**Rejected:** ForgeScript scripts cannot be safely sandboxed — full access to
+the shell's execution model. A malicious `.fgs` plugin is a security disaster.
+
+### Alternative D — Centralised registry (crates.io style)
+
+**Rejected:** Hosting, maintaining, and securing a global registry is
+expensive and operationally complex. The Go-style decentralised model achieves
+discovery without hosting binaries.
+
+### Alternative E — JSON for plugin→host communication
+
+**Rejected:** JSON loses type information at the boundary — `i64::MAX` loses
+precision in JavaScript parsers, `path` and `url` become untyped strings,
+enums lose variant information. Postcard preserves all type information.
+JSON is used only at the AI/MCP boundary, where the host converts from typed
+data.
 
 ---
 
 ## Unresolved Questions
 
-- [ ] What is the WASM ABI version strategy? How are breaking API changes
-      communicated and handled?
-- [ ] Should the plugin SDK be a separate crate or part of `forge-plugin`?
-- [ ] Should plugins be allowed to define their own structured output types,
-      or are they limited to the built-in record/table types?
-- [ ] What is the registry governance model? Who can publish to the official
-      registry?
-- [ ] Should plugin signatures (code signing) be required for registry
-      submissions?
-- [ ] What resource limits apply to plugins? (memory, CPU time per call)
+All previously unresolved questions have been resolved.
+
+| ID | Question | Resolution |
+|---|---|---|
+| UQ-1 | WASM ABI version strategy | Multiple versions simultaneously — 12 month deprecation window |
+| UQ-2 | Plugin SDK location | Separate repos — `forge-plugin-sdk`, `forge-plugin-sdk-go` |
+| UQ-3 | Structured output types | Postcard always — host owns all rendering via `OutputMode` |
+| UQ-4 | Registry governance | Go-style decentralised — static index, vanity URLs, no hosted binaries |
+| UQ-5 | Code signing | Required for verified/official, optional with warning for unverified |
+| UQ-6 | Resource limits | Global ceiling + manifest declaration — sensible interactive defaults |
 
 ---
 
@@ -386,35 +464,60 @@ state.
 
 ### Affected Crates
 
-- `forge-plugin` — WASM host, capability enforcement, plugin lifecycle
-- New: `forge-plugin-sdk` — SDK crate for plugin authors (separate repo)
-- `forge-cli` — `forge plugin` subcommand implementation
+| Crate | Responsibility |
+|---|---|
+| `forge-plugin` | WASM host, capability enforcement, resource limits, plugin lifecycle |
+| `forge-plugin/abi/v1` | ABI v1 host function implementations |
+| `forge-plugin/index` | Plugin index client — resolution, vanity URLs |
+| `forge-plugin/signing` | Ed25519 signing and verification |
+| `forge-cli/plugin` | `forge plugin` subcommand implementations |
+
+**Separate repositories:**
+
+| Repository | Responsibility |
+|---|---|
+| `forge-plugin-sdk` | Rust SDK — shared types, postcard helpers, ABI bindings |
+| `forge-plugin-sdk-go` | Go SDK |
+| `plugin-index` | Static index — `plugins.toml`, `publishers.toml` |
+| `forge-git` | Official reference plugin |
+| `forge-docker` | Official reference plugin |
+| `forge-kubectl` | Official reference plugin |
 
 ### Dependencies
 
-- Requires RFC-002 (Evaluation Pipeline) — plugins integrate at the HIR
-  resolution stage
-- Requires RFC-003 (Built-in Commands) — plugin commands follow the same
-  `BuiltinCommand` interface
+- Requires RFC-001 (ForgeScript syntax) — plugin command invocation
+- Requires RFC-002 (evaluation pipeline) — plugin resolution at HIR stage
+- Requires RFC-003 (built-in commands) — `StructuredOutput` shared with plugins
+- Requires RFC-009 (plugin registry) — index format and distribution
 
 ### Milestones
 
 1. Define plugin ABI v1 — host functions and plugin exports
-2. Implement `wasmtime` plugin host in `forge-plugin`
+2. Implement wasmtime plugin host in `forge-plugin`
 3. Implement capability enforcement layer
-4. Implement `forge plugin install/list/remove` subcommands
-5. Implement plugin registry client
-6. Write `forge-plugin-sdk` crate for Rust plugin authors
-7. Build `forge-git` reference plugin
-8. Build `forge-kubectl` reference plugin
-9. Integration tests — plugin installation and execution on all three platforms
+4. Implement resource limit enforcement — fuel metering + memory limits
+5. Implement plugin index client — resolution, vanity URLs, three-tier lookup
+6. Implement Ed25519 signing and verification
+7. Implement `forge plugin` subcommands — install, remove, update, list, search
+8. Write `forge-plugin-sdk` — Rust SDK with shared types and postcard helpers
+9. Write `forge-plugin-sdk-go` — Go SDK
+10. Build `forge-git` reference plugin
+11. Build `forge-docker` reference plugin
+12. Build `forge-kubectl` reference plugin
+13. Integration tests on ubuntu-latest, macos-latest, windows-latest
 
 ---
 
 ## References
 
-- [wasmtime](https://wasmtime.dev)
+- [wasmtime — Fast and secure runtime for WebAssembly](https://wasmtime.dev/)
 - [WASI Preview 2](https://github.com/WebAssembly/WASI/blob/main/preview2/README.md)
-- [Bytecode Alliance Component Model](https://component-model.bytecodealliance.org)
-- [Extism — Universal Plugin System](https://extism.org)
-- [Zellij Plugin System](https://zellij.dev/documentation/plugins)
+- [Go module system](https://go.dev/ref/mod)
+- [sum.golang.org — Go transparency log](https://sum.golang.org/)
+- [postcard serialisation format](https://github.com/jamesmunns/postcard)
+- [Ed25519 signatures](https://ed25519.cr.yp.to/)
+- [VS Code extension API](https://code.visualstudio.com/api)
+- [RFC-002 — Evaluation Pipeline](./RFC-002-evaluation-pipeline.md)
+- [RFC-003 — Built-in Command Specification](./RFC-003-builtin-commands.md)
+- [RFC-007 — AI Agent Layer](./RFC-007-ai-agent-layer.md)
+- [RFC-009 — Plugin Registry](./RFC-009-plugin-registry.md)
