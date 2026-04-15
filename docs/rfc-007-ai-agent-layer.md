@@ -2,10 +2,10 @@
 
 | Field          | Value                        |
 |----------------|------------------------------|
-| Status         | Draft                        |
+| Status         | **In Review**                |
 | Author         | Ajitem Sahasrabuddhe         |
 | Created        | 2026-04-09                   |
-| Last Updated   | 2026-04-09                   |
+| Last Updated   | 2026-04-15                   |
 | Supersedes     | —                            |
 | Superseded By  | —                            |
 
@@ -13,346 +13,541 @@
 
 ## Summary
 
-This RFC defines the Forge Shell AI agent layer — a set of capabilities that
-make Forge Shell a first-class execution environment for AI agents. This
-includes structured I/O for all built-in commands, a tool registration API
-for exposing `.fgs` functions as AI tools, and an implementation of the
-Model Context Protocol (MCP) that allows any MCP-compatible AI agent or
-framework to invoke Forge Shell commands.
+This RFC defines the Forge Shell AI agent layer — a full implementation of
+the Model Context Protocol (MCP) specification version 2025-11-25 that makes
+Forge Shell the most capable local MCP server available to AI agents. Forge
+Shell exposes built-in commands as MCP Tools, file system and shell state as
+MCP Resources, shell-level diagnostic workflows as MCP Prompts, and supports
+MCP Sampling, Roots, Elicitation, and Tasks. Plugin-owned tools, resources,
+and prompts are aggregated automatically. The official Rust MCP SDK (`rmcp`)
+is used throughout.
 
 ---
 
 ## Motivation
 
-AI agents increasingly need to interact with the filesystem, run processes,
-query cloud infrastructure, and chain together shell operations. Today, agents
-do this by generating bash scripts, which are:
+AI agents increasingly need to interact with the file system, run processes,
+query system state, and chain shell operations. Today, agents do this by
+generating bash scripts — fragile, platform-specific, opaque, and unsafe.
 
-- **Fragile** — exit codes are ignored, errors silently swallowed
-- **Platform-specific** — bash scripts break on Windows
-- **Opaque** — no structured output, agents must parse text
-- **Unsafe** — no confirmation model, no audit trail
+Forge Shell solves all four problems simultaneously:
+- **Typed, structured output** — agents consume `StructuredOutput` JSON, not text
+- **Cross-platform execution** — scripts run identically on Linux, macOS, Windows
+- **Rich resource access** — agents read system state without tool calls
+- **Safety model** — confirmation, audit log, capability scoping, roots enforcement
 
-Forge Shell can solve all four problems simultaneously. Its structured output,
-cross-platform execution, and typed error model make it an ideal agent
-execution environment. The MCP integration makes this available to any
-MCP-compatible AI system without agent-specific integration code.
+The MCP integration makes this available to any MCP-compatible AI system —
+Claude, GPT, Gemini, and any other MCP client — without custom integration code.
 
 ---
 
 ## Design
 
-### 1. Structured I/O
+### 1. MCP Server Architecture
 
-Every built-in command emits structured data. The output format is controlled
-by a global flag or per-command flag:
+```
+AI Agent (MCP Client)
+        ↓  JSON-RPC 2.0 over stdio or streamable HTTP
+forge mcp serve (MCP Server)
+        ↓
+forge-agent crate
+    ├── Tools layer        — built-in commands + #[tool] .fgs functions
+    ├── Resources layer    — shell state, file system, audit log + plugin resources
+    ├── Prompts layer      — shell diagnostics + plugin prompts
+    ├── Tasks manager      — long-running command lifecycle
+    ├── Sampling client    — requests model completions from connected client
+    ├── Roots enforcer     — file system boundary enforcement
+    ├── Elicitation layer  — missing args + destructive confirmations
+    └── Audit logger       — all agent actions logged
+        ↓
+forge-engine (existing evaluation pipeline)
+```
+
+**MCP SDK:** `rmcp` v0.16.0 — official Rust MCP SDK, tokio async runtime.
+
+**Transports:**
 
 ```bash
-# Default — human-readable table
-ls
-
-# JSON — for agent consumption
-forge --output json ls ./src
-
-# NDJSON — for streaming pipelines
-forge --output ndjson ps
-
-# Silent — no output, only exit code
-forge --output none rm ./temp
-```
-
-#### Output Schema
-
-Every structured output record includes:
-
-```json
-{
-  "type":    "record",
-  "command": "ls",
-  "data":    [ ... ],
-  "meta": {
-    "platform":   "linux",
-    "duration_ms": 12,
-    "exit_code":   0
-  }
-}
-```
-
-#### Error Schema
-
-Errors are structured too — agents can parse failure reasons without
-text matching:
-
-```json
-{
-  "type":    "error",
-  "command": "cp",
-  "error": {
-    "kind":    "PermissionDenied",
-    "message": "Permission denied: /etc/hosts",
-    "path":    "/etc/hosts",
-    "code":    13
-  },
-  "meta": {
-    "platform":   "linux",
-    "exit_code":   1
-  }
-}
+forge mcp serve                          # stdio — default, local agents
+forge mcp serve --transport http --port 8765  # streamable HTTP — remote agents
 ```
 
 ---
 
-### 2. Tool Registration API
+### 2. MCP Tools — Built-in Commands
 
-Any `.fgs` function annotated with `#[tool]` is automatically exposed as an
-AI tool with a JSON Schema derived from its type signature.
+#### 2.1 Default Tool Exposure
+
+The safe read-only subset is exposed by default. Destructive commands require
+explicit opt-in.
+
+**Exposed by default:**
+
+| Group | Commands |
+|---|---|
+| File System (read) | `ls`, `tree`, `find`, `stat`, `du`, `df`, `cat` |
+| Text & Streams | `grep`, `head`, `tail`, `sort`, `uniq`, `wc`, `jq`, `yq`, `tq`, `diff` |
+| Environment | `env`, `pwd`, `which` |
+| Network (GET only) | `ping`, `fetch` (GET only) |
+| Forge-specific | `forge check` |
+
+**Requires explicit opt-in:**
+
+| Group | Commands |
+|---|---|
+| File System (destructive) | `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `touch`, `hash` |
+| Environment (mutating) | `set`, `unset`, `cd` |
+| Network (mutating) | `fetch` (POST/PUT/DELETE/PATCH) |
+| Forge-specific | `forge run`, `forge migrate`, `bench`, `watch` |
+
+**Hard exclusions — never exposed regardless of flags:**
+
+```
+forge plugin install
+forge plugin remove
+forge plugin update
+```
+
+Plugin management is a human configuration action. It never appears in an
+agent session under any circumstances — no flag overrides this.
+
+**CLI flags:**
+
+```bash
+forge mcp serve                          # safe subset — default
+forge mcp serve --allow-tools rm,cp,mv  # add specific destructive tools
+forge mcp serve --allow-all             # all commands except plugin management
+forge mcp serve --read-only             # read-only subset only — stricter than default
+```
+
+#### 2.2 `#[tool]` Annotation — ForgeScript Functions as MCP Tools
+
+Any `.fgs` function annotated with `#[tool]` is exposed as an MCP tool when
+`forge mcp serve --script script.fgs` is specified.
 
 ```forge
+#!/usr/bin/env forge
+
 #[tool(
-  description = "Deploy the application to the specified environment",
-  confirm = true    # requires user confirmation before execution
+    description = "Deploy the application to the specified environment",
+    confirm = true    # requires elicitation confirmation before execution
 )]
 fn deploy(
-  env:     string,           # "staging" | "production"
-  dry_run: bool = false,     # show what would happen without executing
-  region:  string = "eu-west-1"
-) -> Result<DeployOutput, DeployError> {
-  # ...
-}
-```
-
-Forge Shell generates the following JSON Schema automatically:
-
-```json
-{
-  "name": "deploy",
-  "description": "Deploy the application to the specified environment",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "env":     { "type": "string" },
-      "dry_run": { "type": "boolean", "default": false },
-      "region":  { "type": "string", "default": "eu-west-1" }
-    },
-    "required": ["env"]
-  }
-}
-```
-
----
-
-### 3. Model Context Protocol (MCP) Implementation
-
-Forge Shell implements MCP as a built-in server. Any MCP-compatible AI agent
-can connect to Forge Shell and invoke registered tools.
-
-#### Starting the MCP Server
-
-```bash
-# Start MCP server on stdio (for local agent integration)
-forge mcp serve --transport stdio
-
-# Start MCP server on a TCP socket
-forge mcp serve --transport tcp --port 8765
-
-# Start with a specific script — only tools from this script are exposed
-forge mcp serve --script ./tools/deploy.fgs
-```
-
-#### MCP Tool Discovery
-
-When an agent connects, it can discover all registered tools:
-
-```json
-{
-  "method": "tools/list",
-  "result": {
-    "tools": [
-      {
-        "name":        "deploy",
-        "description": "Deploy the application to the specified environment",
-        "inputSchema": { ... }
-      },
-      {
-        "name":        "ls",
-        "description": "List directory contents",
-        "inputSchema": { ... }
-      }
-    ]
-  }
-}
-```
-
-All built-in commands are automatically available as MCP tools with their
-structured output schemas. Script tools annotated with `#[tool]` are also
-exposed.
-
-#### MCP Tool Invocation
-
-```json
-{
-  "method": "tools/call",
-  "params": {
-    "name": "deploy",
-    "arguments": {
-      "env":     "staging",
-      "dry_run": true
+    env:     str,    # "staging" | "production"
+    dry_run: bool,   # if true, show plan without executing
+) -> Result<DeployOutput, CommandError> {
+    if dry_run {
+        echo "Dry run: would deploy to {env}"
+        return Ok(DeployOutput::dry_run(env))
     }
-  }
+    run("kubectl apply -f deploy/{env}.yaml")?
+    Ok(DeployOutput::success(env))
 }
 ```
 
+JSON Schema is generated automatically from the ForgeScript function signature
+— no manual schema authoring required.
+
+#### 2.3 Plugin Tools
+
+Plugins declare their MCP tools in `forge-plugin.toml`. The Forge Shell MCP
+server aggregates all installed plugin tools automatically — the agent sees
+one unified `tools/list` response.
+
+```toml
+[[mcp.tools]]
+command     = "git-status"
+description = "Rich git status viewer"
+```
+
+#### 2.4 StructuredOutput → MCP Tool Response
+
+The host converts postcard → `StructuredOutput` → JSON at the MCP boundary.
+Every tool response contains two content blocks:
+
 ```json
 {
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "Dry run: would deploy to staging in eu-west-1\nChanges: 3 services updated"
+  "content": [
+    {
+      "type": "text",
+      "text": "3 files found in /home/user/projects"
+    },
+    {
+      "type": "resource",
+      "resource": {
+        "uri":      "forge://output/ls",
+        "mimeType": "application/json",
+        "text": "{\"command\":\"ls\",\"version\":1,\"status\":\"Success\",\"payload\":{\"Ls\":[...]}}"
       }
-    ],
-    "isError": false
-  }
+    }
+  ],
+  "isError": false
 }
+```
+
+- **Text block** — human-readable summary for agent reasoning
+- **Resource block** — full `StructuredOutput` JSON for programmatic consumption
+
+Conversion pipeline:
+
+```
+postcard (built-in or plugin)
+    ↓ host deserialises
+StructuredOutput
+    ↓ OutputMode::Structured
+    ↓ serde_json::to_value()
+MCP Tool Response JSON
 ```
 
 ---
 
-### 4. Safety Model
+### 3. MCP Tasks — Long-Running Commands
 
-The agent layer enforces a safety model that prevents runaway agents from
-causing irreversible damage.
+Commands are classified by expected duration:
 
-#### Confirmation Mode
+| Command type | Response model |
+|---|---|
+| Fast (`ls`, `grep`, `cat`) | Immediate MCP Tool response |
+| Bounded long-running (`bench` N runs, `tail` N lines) | Immediate — result when done |
+| Unbounded (`tail -f`, `watch`) | MCP Task — agent polls, can cancel |
+| `forge run` (unknown duration) | MCP Task — agent polls, can cancel |
 
-Commands marked `confirm = true` in their `#[tool]` annotation pause and
-request user approval before execution. In non-interactive (agent) sessions,
-confirmation is handled via MCP:
+**Task lifecycle:**
 
-```json
-{
-  "method": "tools/confirm",
-  "params": {
-    "tool":    "deploy",
-    "args":    { "env": "production" },
-    "warning": "This will deploy to PRODUCTION. Are you sure?"
-  }
-}
+```
+Agent invokes tool: tail --follow /var/log/forge.log
+         ↓
+Forge Shell returns immediately:
+  Task { id: "task-001", status: "running" }
+         ↓
+Agent polls: tasks/status { id: "task-001" }
+  → Task { id: "task-001", status: "running", partial_output: [...] }
+         ↓
+Agent cancels: tasks/cancel { id: "task-001" }
+  → Task { id: "task-001", status: "cancelled" }
 ```
 
-The agent framework must reply with `confirmed: true` before the command
-executes. If the framework does not support confirmation, the command is
-rejected.
+Active Tasks always extend the session timeout — a connection with a running
+Task is never considered idle.
 
-#### Dry-Run Mode
+---
 
-All destructive commands support `--dry-run`. When `--dry-run` is passed,
-the execution plan is generated and returned as structured output but never
-executed:
+### 4. MCP Resources
+
+#### 4.1 Core Resources — Forge Shell Owns
+
+```
+# File System
+forge://fs/{path}              — file contents
+forge://fs/tree/{path}         — directory tree as structured JSON
+forge://fs/stat/{path}         — file metadata
+
+# Environment
+forge://env                    — all environment variables
+forge://env/{key}              — single environment variable
+forge://path                   — PATH as list<path> JSON
+forge://cwd                    — current working directory
+
+# Shell State
+forge://jobs                   — background jobs
+forge://history                — session command history
+
+# System
+forge://system/platform        — OS, architecture, forge version
+forge://system/disk            — disk usage summary
+forge://system/ports           — listening ports with process names
+forge://system/processes       — running processes
+
+# Config
+forge://config/forge           — resolved forge config
+forge://config/hosts           — /etc/hosts
+
+# Plugins
+forge://plugins                — installed plugins — name, version, capabilities
+forge://plugins/{name}         — specific plugin manifest
+
+# Audit
+forge://audit/current          — current session audit log — subscribable
+forge://audit/sessions         — list of past sessions
+forge://audit/sessions/{id}    — specific session log
+
+# Script Output Cache
+forge://output/{script}        — last StructuredOutput of a named script
+```
+
+#### 4.2 Plugin Resources
+
+Plugins declare their MCP resources in `forge-plugin.toml`:
+
+```toml
+[[mcp.resources]]
+uri_pattern  = "forge://git/status"
+description  = "Git working tree status"
+subscribable = true
+
+[[mcp.resources]]
+uri_pattern  = "forge://git/diff"
+description  = "Current unstaged diff"
+subscribable = true
+```
+
+**Example plugin-owned resource namespaces:**
+
+| Plugin | Resource namespace |
+|---|---|
+| `forge-git` | `forge://git/*` |
+| `forge-docker` | `forge://docker/*` |
+| `forge-kubectl` | `forge://kubernetes/*` |
+| `forge-aws` | `forge://aws/*` |
+| `forge-rust` | `forge://project/rust/*` |
+| `forge-node` | `forge://project/node/*` |
+
+#### 4.3 Subscriptions
+
+| Resource | Subscribable |
+|---|---|
+| `forge://jobs` | ✅ |
+| `forge://audit/current` | ✅ |
+| `forge://env` | ✅ |
+| `forge://cwd` | ✅ |
+| `forge://fs/{path}` | ✅ |
+| `forge://system/disk` | ✅ |
+| `forge://system/ports` | ✅ |
+| `forge://plugins` | ✅ |
+| `forge://system/platform` | ❌ static |
+| `forge://config/hosts` | ❌ static |
+
+---
+
+### 5. MCP Prompts
+
+#### 5.1 Core Prompts — Forge Shell Owns
+
+Shell-level diagnostic prompts only. Project and tool-specific prompts belong
+to plugins.
+
+```
+forge://prompts/diagnose-error    — given an error, gather system context
+forge://prompts/debug-port        — given a port, find what's using it
+forge://prompts/explain-failure   — given a failed command, explain why
+forge://prompts/system-health     — snapshot of system state
+forge://prompts/env-audit         — review environment variables for issues
+```
+
+**Example — `diagnose-error` assembled by Forge Shell:**
+
+When invoked with `{ "error": "EADDRINUSE: port 8080 already in use" }`,
+Forge Shell assembles a message containing:
+- The error text
+- `forge://system/platform`
+- `forge://system/ports` — what's on port 8080
+- `forge://system/processes` — relevant processes
+- Recent `forge://audit/current` entries
+- `forge://cwd`
+
+The agent receives rich pre-assembled context — no separate resource reads needed.
+
+#### 5.2 Plugin Prompts
+
+```toml
+[[mcp.prompts]]
+name        = "git-commit"
+description = "Generate a commit message from current diff"
+arguments   = []
+```
+
+**Example plugin-owned prompts:**
+
+| Plugin | Prompts |
+|---|---|
+| `forge-git` | `git-commit`, `code-review`, `branch-summary` |
+| `forge-rust` | `cargo-test`, `clippy-review`, `build-diagnosis` |
+| `forge-node` | `npm-test`, `lint-review`, `dependency-audit` |
+| `forge-docker` | `container-diagnosis`, `image-cleanup` |
+
+---
+
+### 6. MCP Sampling
+
+Forge Shell uses Sampling for enhancement use cases only — never for
+decisions with side effects.
+
+**Approved sampling use cases:**
+
+| Use case | Trigger | Forge asks client |
+|---|---|---|
+| Error explanation | Command fails with cryptic error | "Explain this error given this system context" |
+| Script improvement | `forge-ai fmt script.fgs` | "Suggest improvements to this ForgeScript" |
+| Diagnostic summary | `diagnose-error` prompt invoked | "Summarise these diagnostic findings" |
+
+**Hard rules — sampling never used for:**
+- Destructive decisions — `rm`, `deploy`, `forge plugin install`
+- Confirmation bypass — human approval always takes precedence
+- Core shell functionality — sampling is enhancement, not foundation
+- Any action with side effects
+
+---
+
+### 7. MCP Roots
+
+Roots are file system boundaries declared by the MCP client. Forge Shell
+enforces them strictly.
 
 ```json
 {
-  "type": "dry_run",
-  "plan": [
-    { "op": "exec",   "cmd": "kubectl", "args": ["apply", "-f", "manifest.yaml"] },
-    { "op": "exec",   "cmd": "kubectl", "args": ["rollout", "status", "deployment/app"] }
+  "roots": [
+    { "uri": "file:///home/user/projects/forge-shell", "name": "Project Root" }
   ]
 }
 ```
 
-#### Audit Log
+**Enforcement rules:**
+- Roots declared → all file operations and resource reads enforced within roots
+- No roots declared → full file system access
+- No override flag — roots are a hard security boundary, not a preference
+- Violations rejected and logged to audit log — never executed
 
-All agent-invoked commands are logged to a structured audit log:
-
-```
-~/.forge/logs/agent-audit.ndjson
-```
+**Audit log entry for root violation:**
 
 ```json
-{"timestamp":"2026-04-09T10:23:45Z","session":"sess_abc123","tool":"deploy","args":{"env":"staging"},"exit_code":0,"duration_ms":4521}
-{"timestamp":"2026-04-09T10:24:01Z","session":"sess_abc123","tool":"ls","args":{"path":"./src"},"exit_code":0,"duration_ms":8}
+{
+  "timestamp": "2026-04-15T09:00:01Z",
+  "tool":      "cat",
+  "arguments": { "path": "/etc/passwd" },
+  "result":    "rejected",
+  "reason":    "outside_declared_roots"
+}
 ```
 
-#### Capability Scoping for Agent Sessions
+---
 
-When starting an MCP server, the exposed tool set can be restricted:
+### 8. MCP Elicitation
+
+Forge Shell uses elicitation for two cases: missing required arguments and
+destructive operation confirmation.
+
+#### 8.1 Missing Argument Elicitation
+
+```
+Agent calls: rm (no path argument)
+         ↓
+Forge Shell elicits: "Which path should be removed?"
+         ↓
+Client responds: "/tmp/old-build"
+         ↓
+Forge Shell proceeds with rm /tmp/old-build
+```
+
+#### 8.2 Destructive Confirmation — Type-to-Confirm
+
+Destructive operations require the human to type the target exactly — not
+a simple `[y/N]` prompt.
+
+```
+Agent calls: rm path: p"/home/user/projects" --recursive
+         ↓
+Forge Shell elicits:
+  "⚠️ This will permanently delete /home/user/projects and all contents.
+   Type the path to confirm:"
+         ↓
+Human types: /home/user/projects
+         ↓
+Forge Shell proceeds only if input matches exactly
+```
+
+**Commands requiring type-to-confirm elicitation:**
+
+| Command | Must type |
+|---|---|
+| `rm --recursive` | Full path |
+| `rm` on non-empty directory | Full path |
+| `fetch` with DELETE | Full URL |
+| `forge run` in agent context | Script name |
+| `#[tool]` with `confirm = true` | Declared in annotation |
+
+---
+
+### 9. Session Management
+
+**Session timeout:**
+
+```toml
+[mcp]
+session_timeout = "30m"    # default — configurable
+```
 
 ```bash
-# Only expose specific tools
-forge mcp serve --allow-tools deploy,ls,ps
-
-# Deny destructive tools
-forge mcp serve --deny-tools rm,kill,chmod
-
-# Read-only mode — only non-mutating built-ins
-forge mcp serve --read-only
+forge mcp serve --timeout 60m     # override per session
+forge mcp serve --timeout none    # explicit infinite
 ```
+
+- Default: 30 minutes of inactivity
+- Active Tasks always extend timeout — running tasks are never idle
+- On timeout: `notifications/session_timeout` sent before connection closes
+- Agent can reconnect cleanly after timeout
 
 ---
 
-### 5. Agent Session Protocol
+### 10. Audit Log
 
-A full agent session is stateful. Forge Shell maintains session context
-across multiple tool calls:
+All agent-invoked actions are logged — including rejected operations.
 
+**Disk location:**
+
+| Platform | Path |
+|---|---|
+| Linux / macOS | `~/.config/forge/audit/sessions/` |
+| Windows | `%APPDATA%\forge\audit\sessions\` |
+
+**Log entry format:**
+
+```json
+{
+  "session_id":  "sess-001",
+  "timestamp":   "2026-04-15T09:00:01Z",
+  "tool":        "rm",
+  "arguments":   { "path": "/tmp/old.log" },
+  "confirmed":   true,
+  "result":      "ok",
+  "duration_ms": 8
+}
 ```
-Agent                          Forge Shell (MCP Server)
-  │                                      │
-  │── initialize ────────────────────────▶│  negotiate capabilities
-  │◀─ initialized ───────────────────────│
-  │                                      │
-  │── tools/list ────────────────────────▶│  discover available tools
-  │◀─ tools (list) ──────────────────────│
-  │                                      │
-  │── tools/call (ls ./src) ────────────▶│  execute
-  │◀─ result (structured JSON) ──────────│
-  │                                      │
-  │── tools/call (deploy staging) ──────▶│  requires confirmation
-  │◀─ tools/confirm (warning message) ───│
-  │── tools/confirm (confirmed: true) ──▶│
-  │◀─ result ────────────────────────────│
-  │                                      │
-  │── shutdown ──────────────────────────▶│
-```
+
+**Audit log as MCP Resource:** `forge://audit/current` — subscribable,
+real-time updates. `forge://audit/sessions/{id}` — past sessions read-only.
+
+**Access control:** Audit log is always read-only via MCP. No tool can
+modify or delete audit entries.
 
 ---
 
-### 6. forge-agent Crate Structure
+### 11. Capability Scoping Summary
 
-```
-forge-agent/
-├── src/
-│   ├── mcp/
-│   │   ├── server.rs      # MCP server (stdio + TCP transports)
-│   │   ├── protocol.rs    # MCP message types
-│   │   ├── handler.rs     # Tool call dispatch
-│   │   └── session.rs     # Session state management
-│   ├── tool/
-│   │   ├── registry.rs    # Tool registration and discovery
-│   │   ├── schema.rs      # JSON Schema generation from ForgeScript types
-│   │   └── confirm.rs     # Confirmation model
-│   ├── output/
-│   │   ├── json.rs        # JSON output formatter
-│   │   ├── ndjson.rs      # NDJSON output formatter
-│   │   └── schema.rs      # Output type definitions
-│   └── audit/
-│       └── log.rs         # Audit log writer
-```
+| Capability | Default | Override |
+|---|---|---|
+| Read-only built-ins | ✅ Exposed | — |
+| Destructive built-ins | ❌ Hidden | `--allow-tools` or `--allow-all` |
+| Plugin management | ❌ Never | No override — hard rule |
+| `#[tool]` functions | ❌ Hidden | `--script script.fgs` |
+| Roots enforcement | ✅ If declared | None — roots are hard boundary |
+| Session timeout | 30 min | `--timeout` flag or `config.toml` |
+| Sampling | ✅ Enhancement only | — |
+| Elicitation | ✅ Always | — |
 
 ---
 
 ## Drawbacks
 
-- **MCP spec is evolving** — the Model Context Protocol is relatively new.
-  Breaking changes in the spec would require updates to `forge-agent`.
-- **Structured output adds overhead** — serialising every command output to
-  JSON has a measurable cost. For interactive use, this is opt-in. For agent
-  sessions, it is always on.
-- **Confirmation UX in agent sessions** — the confirmation model requires
-  agent framework support. Frameworks that do not implement the confirmation
-  protocol cannot safely run destructive Forge tools.
-- **Schema generation complexity** — generating accurate JSON Schema from
-  ForgeScript type annotations requires deep integration with the type system.
+- **MCP spec evolves rapidly.** The 2025-11-25 spec is the current version —
+  future spec changes may require updates to `forge-agent`. Using `rmcp`
+  (official SDK) mitigates this — SDK updates handle spec changes.
+- **Plugin resource aggregation adds complexity.** The MCP server must
+  dynamically aggregate tools, resources, and prompts from all installed
+  plugins. Plugin install/remove mid-session is not supported — requires
+  server restart.
+- **Type-to-confirm elicitation adds friction.** Deliberate — destructive
+  operations should be friction-ful. But poorly designed agent workflows
+  that require frequent destructive operations will feel slow.
 
 ---
 
@@ -360,38 +555,53 @@ forge-agent/
 
 ### Alternative A — Bash Script Generation
 
-**Approach:** The agent generates bash scripts which Forge Shell executes.
-**Rejected because:** This makes Forge Shell a dumb executor. Structured
-output, the confirmation model, and the type-safe tool API all require
-native integration. Bash script generation also reintroduces all the
-platform-specific problems Forge Shell is designed to solve.
+**Rejected:** Makes Forge Shell a dumb executor. Structured output, the
+confirmation model, and typed tools all require native integration. Reintroduces
+platform-specific problems ForgeScript is designed to solve.
 
-### Alternative B — HTTP/REST API
+### Alternative B — Bespoke REST API
 
-**Approach:** Forge Shell exposes a REST API instead of implementing MCP.
-**Rejected because:** MCP is rapidly becoming the standard protocol for
-AI agent tool integration. Implementing a bespoke REST API would require
-custom integration code in every AI framework. MCP gives Forge Shell
-compatibility with Claude, GPT, and any other MCP-compatible system for free.
+**Rejected:** MCP is the de-facto standard for AI agent tool integration.
+A bespoke REST API requires custom integration in every AI framework. MCP
+gives compatibility with Claude, GPT, Gemini, and any MCP-compatible system.
 
 ### Alternative C — Plugin-Based Agent Integration
 
-**Approach:** Agent integration is a plugin, not a core feature.
-**Rejected because:** The agent layer requires deep integration with the
-execution pipeline (structured output, audit logging, confirmation model).
-This cannot be safely or cleanly implemented as a plugin.
+**Rejected:** The agent layer requires deep integration with the evaluation
+pipeline — structured output, audit logging, elicitation, roots enforcement.
+This cannot be safely implemented as a plugin.
+
+### Alternative D — Expose All Built-ins by Default
+
+**Rejected:** An agent with automatic access to `rm`, `mv`, and `fetch POST`
+is a significant blast radius. The MCP spec requires explicit user consent
+before invoking tools. Safe-subset-by-default honours this principle.
+
+### Alternative E — Allow Plugin Installation via MCP
+
+**Rejected:** An agent that can install plugins can escalate its own
+capabilities by installing a plugin with `exec["*"]` and `filesystem:read-write`.
+This is a privilege escalation vector that must be closed unconditionally.
 
 ---
 
 ## Unresolved Questions
 
-- [ ] Should all built-in commands be exposed as MCP tools by default, or
-      should agent-accessible tools be opt-in?
-- [ ] How should long-running tool calls (e.g. `tail -f`) be handled in MCP?
-      MCP does not natively support streaming results.
-- [ ] Should the audit log be queryable via a built-in command or MCP tool?
-- [ ] What is the session timeout policy for idle MCP connections?
-- [ ] Should Forge Shell support MCP resources (not just tools)?
+All previously unresolved questions have been resolved.
+
+| ID | Question | Resolution |
+|---|---|---|
+| UQ-1 | Which built-ins as MCP Tools? | Safe read-only subset by default — opt-in for destructive |
+| UQ-2 | Long-running commands | MCP Tasks — agent polls, can cancel |
+| UQ-3 | Audit log as MCP Resource | Both disk and MCP Resource — subscribable |
+| UQ-4 | Session timeout | 30 min default — configurable, Tasks extend |
+| UQ-5 | MCP Resources | Core shell resources — tool/project resources via plugins |
+| UQ-6 | MCP Prompts | Shell diagnostics only — project prompts via plugins |
+| UQ-7 | MCP Sampling | Yes — error explanation and script enhancement only |
+| UQ-8 | MCP Roots | Strictly enforced — no override, no roots = full access |
+| UQ-9 | MCP Elicitation | Yes — missing args + type-to-confirm for destructive |
+| UQ-10 | StructuredOutput → MCP | Host converts at boundary — text + resource JSON |
+| UQ-11 | Agents install plugins? | Never — hard rule, no override |
 
 ---
 
@@ -399,36 +609,57 @@ This cannot be safely or cleanly implemented as a plugin.
 
 ### Affected Crates
 
-- `forge-agent` — new crate, all agent layer code
-- `forge-builtins` — add structured output layer to all built-ins
-- `forge-lang` — `#[tool]` annotation, JSON Schema generation from types
-- `forge-cli` — `forge mcp serve` subcommand
+| Crate | Responsibility |
+|---|---|
+| `forge-agent` | MCP server — tools, resources, prompts, tasks, sampling, roots, elicitation |
+| `forge-agent/tools` | Tool registry — built-in + plugin + `#[tool]` function tools |
+| `forge-agent/resources` | Resource registry — core + plugin resources, subscriptions |
+| `forge-agent/prompts` | Prompt registry — core + plugin prompts |
+| `forge-agent/tasks` | Long-running task lifecycle manager |
+| `forge-agent/audit` | Audit logger — disk + MCP resource |
+| `forge-agent/elicitation` | Missing arg + type-to-confirm elicitation |
+| `forge-lang` | `#[tool]` annotation, JSON Schema generation from type signatures |
+| `forge-cli` | `forge mcp serve` subcommand |
+
+**External dependency:** `rmcp` v0.16.0 — official Rust MCP SDK.
 
 ### Dependencies
 
-- Requires RFC-001 (ForgeScript Syntax) — `#[tool]` annotation syntax
-- Requires RFC-002 (Evaluation Pipeline) — structured output integrates
-  with execution engine
-- Requires RFC-003 (Built-in Commands) — all built-ins need structured
-  output before MCP exposure
+- Requires RFC-001 (ForgeScript syntax) — `#[tool]` annotation
+- Requires RFC-002 (evaluation pipeline) — structured output integration
+- Requires RFC-003 (built-in commands) — all built-ins with `StructuredOutput`
+- Requires RFC-005 (plugin system) — plugin tool/resource/prompt aggregation
+- Requires RFC-006 (job control) — `forge://jobs` resource
 
 ### Milestones
 
-1. Implement structured JSON/NDJSON output layer for all built-ins
-2. Define tool registration API and `#[tool]` annotation
-3. Implement JSON Schema generation from ForgeScript type signatures
-4. Implement MCP server (stdio transport) in `forge-agent`
-5. Implement MCP server (TCP transport)
-6. Implement confirmation model
-7. Implement audit log
-8. Implement capability scoping (`--allow-tools`, `--deny-tools`, `--read-only`)
-9. Integration tests — MCP tool discovery and invocation
+1. Implement `forge mcp serve` — stdio and streamable HTTP transports
+2. Implement tool registry — built-in command exposure, capability scoping
+3. Implement `#[tool]` annotation and JSON Schema generation
+4. Implement MCP Tasks — long-running command lifecycle
+5. Implement core resource registry — all `forge://` URIs
+6. Implement resource subscriptions — jobs, audit, env, cwd, fs
+7. Implement core prompt registry — shell diagnostic prompts
+8. Implement plugin aggregation — tools, resources, prompts from installed plugins
+9. Implement roots enforcement
+10. Implement elicitation — missing args + type-to-confirm
+11. Implement sampling — error explanation + script improvement
+12. Implement audit logger — disk + MCP resource
+13. Implement session timeout management
+14. Integration tests — full MCP session on ubuntu-latest, macos-latest, windows-latest
 
 ---
 
 ## References
 
-- [Model Context Protocol Specification](https://modelcontextprotocol.io/specification)
-- [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
-- [JSON Schema Specification](https://json-schema.org/specification)
-- [Anthropic Claude Tool Use](https://docs.anthropic.com/en/docs/build-with-claude/tool-use)
+- [Model Context Protocol Specification 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25)
+- [rmcp — Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
+- [MCP Tools](https://modelcontextprotocol.io/docs/concepts/tools)
+- [MCP Resources](https://modelcontextprotocol.io/docs/concepts/resources)
+- [MCP Prompts](https://modelcontextprotocol.io/docs/concepts/prompts)
+- [MCP Tasks — November 2025 spec](https://blog.modelcontextprotocol.io/posts/2025-11-25-first-mcp-anniversary/)
+- [RFC-001 — ForgeScript Syntax](./RFC-001-forgescript-syntax.md)
+- [RFC-002 — Evaluation Pipeline](./RFC-002-evaluation-pipeline.md)
+- [RFC-003 — Built-in Commands](./RFC-003-builtin-commands.md)
+- [RFC-005 — Plugin System](./RFC-005-plugin-system.md)
+- [RFC-006 — Job Control](./RFC-006-job-control.md)
