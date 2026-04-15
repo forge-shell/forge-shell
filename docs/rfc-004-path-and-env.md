@@ -2,10 +2,10 @@
 
 | Field          | Value                        |
 |----------------|------------------------------|
-| Status         | Draft                        |
+| Status         | **In Review**                |
 | Author         | Ajitem Sahasrabuddhe         |
 | Created        | 2026-04-09                   |
-| Last Updated   | 2026-04-09                   |
+| Last Updated   | 2026-04-15                   |
 | Supersedes     | —                            |
 | Superseded By  | —                            |
 
@@ -23,359 +23,390 @@ script authors to think about OS differences.
 
 ## Motivation
 
-The two most common sources of cross-platform shell script breakage are:
+Paths and environment variables are the two most common sources of
+cross-platform scripting failures:
 
-1. **Path handling** — separator characters (`/` vs `\`), drive letters,
-   UNC paths, reserved filenames, and case sensitivity differences.
-2. **Environment variable handling** — `$VAR` vs `%VAR%` syntax, case
-   sensitivity, PATH separator (`:`  vs `;`), and variable scoping.
+- `/` vs `\` separator bugs silently break scripts on Windows
+- `CON`, `NUL`, and other reserved filenames cause cryptic failures
+- `PATH` separator (`:` vs `;`) breaks manual string manipulation
+- Stringly-typed env vars cause silent type errors at runtime
+- `.env` file loading varies wildly across tools and frameworks
 
-Neither of these should require script authors to write platform-conditional
-code. They are implementation details of the OS, not concerns of the script.
+ForgeScript addresses all of these by making `path` a first-class typed value
+and by providing a typed access layer over the OS string-based env var model.
 
 ---
 
 ## Design
 
-### Part 1 — The `path` Type
+### 1. The `path` Type
 
-#### 1.1 Core Principle
+`path` is a first-class type in ForgeScript. It is not a string alias — it
+carries normalisation rules, platform semantics, and separator handling.
 
-`path` is a distinct type from `string`. There is no implicit coercion
-between them. A string is not a path. A path is not a string.
+#### 1.1 Literal Syntax
 
-```forge
-let s: string = "/usr/bin"
-let p: path   = path("/usr/bin")
-
-let bad: path = "/usr/bin"     # ❌ type error — must be explicit
-```
-
-This single rule prevents the majority of path-related cross-platform bugs.
-
-#### 1.2 Path Construction
+Path literals use the `p"..."` prefix — statically validated at parse time:
 
 ```forge
-# Absolute paths
-let abs = path("/usr/local/bin")              # Unix-style — preferred in source
-let abs = path("C:\\Program Files\\Forge")    # Windows-style — accepted, normalised
-
-# Relative paths
-let rel = path("./scripts/deploy.fgs")
-let rel = path("../config")
-
-# Home directory
-let home_dir = home()                         # Returns path — not string
-let config   = home() / ".config" / "forge"
-
-# Current working directory
-let cwd = pwd()                               # Returns path
-
-# From environment variable (explicit conversion)
-let bin = path($GOPATH) / "bin"
+let config = p"/etc/forge/config.toml"
+let home   = p"~/projects"
+let rel    = p"./src/main.fgs"
 ```
 
-#### 1.3 Path Arithmetic
+Reserved Windows filenames (`CON`, `NUL`, `PRN`, `AUX`, `COM1`–`COM9`,
+`LPT1`–`LPT9`) are rejected at parse time on all platforms.
 
-The `/` operator is overloaded for `path` values. It is the only supported
-way to join path components. String concatenation for paths is a type error.
+#### 1.2 Normalisation — Construction Time
+
+Paths are normalised eagerly at the moment of construction — whether via
+`p"..."` literal, dynamic construction, or the `/` join operator.
+
+**Normalisation rules:**
+
+| Input | Normalised form |
+|---|---|
+| `/home/user/../user/projects` | `/home/user/projects` |
+| `C:\Users\Ajitem` | `C:/Users/Ajitem` |
+| `/home/user/./projects/` | `/home/user/projects` |
+| `~/projects` | `/home/ajitem/projects` — tilde expanded at runtime |
+| `//double//slashes` | `/double/slashes` |
+| `\\server\share` | `\\server\share` — UNC paths preserved on Windows |
+
+**Rules applied:**
+- Separator normalisation: `\` → `/` — canonical internal representation
+- Dot segment resolution: `.` and `..` resolved eagerly
+- Trailing slash stripped
+- Tilde expansion: at construction time when runtime is available
+- Double slashes collapsed — except UNC paths on Windows
+
+**Equality semantics:** Two `path` values are equal if and only if their
+normalised forms are identical. No OS call required to compare paths.
+
+#### 1.3 Path Composition — The `/` Operator
+
+Runtime path composition uses the `/` operator — not string interpolation:
 
 ```forge
-let base    = path("/usr/local")
-let bin     = base / "bin"                    # path("/usr/local/bin")
-let forge   = bin / "forge"                   # path("/usr/local/bin/forge")
-
-# Chaining
-let log = home() / ".forge" / "logs" / "forge.log"
-
-# ❌ Never do this — type error
-let bad = "/usr/local" + "/bin"               # string concat, not path join
+let base    = p"/home/user"
+let full    = base / "projects" / name    # typed join, validated
+let config  = base / p".config/forge"    # mixed literal and path
 ```
 
-#### 1.4 Path Methods
+The `/` operator:
+- Validates each segment for invalid characters
+- Checks for reserved Windows filenames on each segment
+- Returns a normalised `path` — never a raw string
+
+#### 1.4 Windows Reserved Filename Policy
+
+| Platform | Behaviour |
+|---|---|
+| Linux / macOS | Compile-time warning `W021` |
+| Windows | Hard error — construction fails |
+| `forge check --platform=windows` | Escalates warning to hard error |
+
+**Reserved names (case-insensitive, any extension):**
+`CON`, `NUL`, `PRN`, `AUX`, `COM1`–`COM9`, `LPT1`–`LPT9`
+
+**Warning format:**
+
+```
+warning[W021]: Windows reserved filename detected
+  --> deploy.fgs:8:14
+   |
+ 8 | let log = p"CON.log"
+   |           ^^^^^^^^^^ reserved on Windows
+   = note: this path will fail if this script is run on Windows
+   = help: rename to avoid: CON.log → forge-con.log
+```
+
+**Applies to:**
+- `p"..."` literals — caught at parse time
+- Dynamically constructed paths — caught at construction time
+- Paths received from external input — warned via `OutputMetadata.warnings`
+
+#### 1.5 Path API — `forge::fs`
 
 ```forge
-let p = path("/home/ajitem/.config/forge/config.fgs")
+import forge::fs
 
-p.exists()           # bool
-p.is_file()          # bool
-p.is_dir()           # bool
-p.is_symlink()       # bool
+# Metadata
+forge::fs::exists(p"/etc/forge")           # bool
+forge::fs::is_file(p"/etc/forge/config")   # bool
+forge::fs::is_dir(p"/etc/forge")           # bool
+forge::fs::metadata(p"/etc/forge/config")  # Result<FileMetadata, FsError>
 
-p.parent()           # path → /home/ajitem/.config/forge
-p.file_name()        # string → "config.fgs"
-p.stem()             # string → "config"
-p.extension()        # Option<string> → Some("fgs")
+# Manipulation
+forge::fs::join(p"/home/user", "projects") # same as / operator
+forge::fs::parent(p"/home/user/projects")  # p"/home/user"
+forge::fs::filename(p"/home/user/file.txt") # "file.txt"
+forge::fs::extension(p"/home/user/file.txt") # "txt"
+forge::fs::stem(p"/home/user/file.txt")    # "file"
 
-p.to_string()        # Native platform string — / on Unix, \ on Windows
-p.to_slash()         # Always forward slashes — for display/logging
-
-p.absolute()         # Result<path> — resolves relative paths
-p.canonicalise()     # Result<path> — resolves symlinks, normalises
-
-p.with_extension("bak")     # path — replace extension
-p.with_file_name("new.fgs") # path — replace filename
-
-p.starts_with(base)  # bool
-p.ends_with("fgs")   # bool
-
-p.components()       # [string] — path segments split by separator
+# Conversion
+forge::fs::to_str(p"/home/user")           # str — platform-native separators
+forge::fs::from_str("/home/user")          # Result<path, PathError>
 ```
-
-#### 1.5 Path Normalisation Rules
-
-The following normalisation is applied by the `path()` constructor and at
-every OS boundary:
-
-| Rule | Input | Normalised |
-|------|-------|------------|
-| Backslash to forward slash (internal) | `C:\Users\ajitem` | `C:/Users/ajitem` |
-| Collapse double slashes | `//usr//bin` | `/usr/bin` |
-| Resolve `.` segments | `./foo/./bar` | `foo/bar` |
-| Preserve `..` segments | `../foo` | `../foo` (resolved at OS boundary) |
-| Strip trailing slash | `/usr/bin/` | `/usr/bin` |
-| Drive letter case normalise (Windows) | `c:\` | `C:\` |
-
-Forward slashes are the canonical internal representation. Backslashes are
-emitted only when passing paths to Windows OS APIs.
-
-#### 1.6 Windows Reserved Filename Detection
-
-The following Windows-reserved filenames are detected and warned on all
-platforms — including Linux and macOS:
-
-```
-CON PRN AUX NUL COM0-COM9 LPT0-LPT9
-```
-
-```forge
-let p = path("./output/nul.fgs")
-# Warning: "nul" is a reserved Windows device name.
-# This path will not behave as expected on Windows.
-# Consider renaming to avoid compatibility issues.
-```
-
-This warning fires on Linux and macOS too — making portability issues visible
-before a script reaches a Windows machine.
-
-#### 1.7 UNC Paths (Windows)
-
-UNC paths (`\\server\share`) are supported as a path variant:
-
-```forge
-let unc = path("\\\\server\\share\\data")
-# Normalised internally as: //server/share/data
-```
-
-UNC paths are a no-op warning on Linux and macOS (they are treated as relative
-paths starting with `//`).
-
-#### 1.8 PATH Environment Variable
-
-`$PATH` is a specialised `[path]` — a list of `path` values. It is never
-a raw string in ForgeScript.
-
-```forge
-# Reading
-let paths = $PATH                  # [path]
-
-# Mutation
-$PATH.prepend(path("/usr/local/bin"))
-$PATH.append(home() / ".cargo" / "bin")
-$PATH.remove(path("/usr/local/bin"))
-$PATH.contains(path("/usr/bin"))   # bool
-
-# Iteration
-for dir in $PATH {
-  if dir.exists() {
-    print(dir)
-  }
-}
-```
-
-When `$PATH` is passed to a child process, it is joined with `:` on Unix and
-`;` on Windows by the platform lowering layer. The script author never sees
-the separator.
 
 ---
 
-### Part 2 — Environment Variable Model
+### 2. The Environment Variable Model
 
-#### 2.1 Variable Access Syntax
+#### 2.1 Core Principle — Typed Access, String Storage
+
+Environment variables are stored as strings at the OS boundary — this is a
+fundamental OS constraint that ForgeScript does not attempt to change. All
+child processes receive string env vars regardless of how they were set.
+
+ForgeScript provides a typed access layer on top — typed accessors parse on
+read and serialise on write. The developer works with types. The OS sees
+strings. The boundary is explicit and clear.
+
+#### 2.2 Write API — Typed, Serialised to String
 
 ```forge
-# Read — fails at runtime if unset
-let home = $HOME
+forge::env::set("PORT",    8080)              # int   → "8080"
+forge::env::set("DEBUG",   true)              # bool  → "true"
+forge::env::set("TIMEOUT", 30)                # int   → "30"
+forge::env::set("HOME",    p"/home/ajitem")   # path  → "/home/ajitem"
+forge::env::set("API_URL", u"https://api.forge-shell.dev")  # url → string
 
-# Safe read — returns Option<string>
-let token = $GITHUB_TOKEN?
-
-# Read with default
-let port = $PORT? |> unwrap_or("8080")
-
-# Read as typed value
-let port_num = $PORT?.and_then(|s| s.parse::<int>())
-                     .unwrap_or(8080)
+forge::env::unset("LEGACY_VAR")              # remove from environment
 ```
 
-#### 2.2 Case Sensitivity
-
-ForgeScript treats environment variables as case-sensitive in source code.
-However, on Windows the OS is case-insensitive. Forge bridges this gap:
-
-- **Reading** — on Windows, if `$GITHUB_TOKEN` is not found, Forge performs a
-  case-insensitive lookup and emits a warning if a match is found under a
-  different case.
-- **Setting** — Forge always writes in the exact case specified. On Windows,
-  this may shadow an existing variable of different case.
-- **Best practice** — use `SCREAMING_SNAKE_CASE` for all environment variables.
-  Document expected variable names. This eliminates the case ambiguity.
-
-#### 2.3 Setting Variables
+#### 2.3 Read API — Typed Accessors
 
 ```forge
-# Set — visible in current script scope and child processes spawned after
-set PORT = "8080"
+let port    = forge::env::get_int("PORT")?
+let debug   = forge::env::get_bool("DEBUG")?
+let timeout = forge::env::get_int("TIMEOUT")?
+let home    = forge::env::get_path("HOME")?
+let api     = forge::env::get_url("API_URL")?
+let raw     = forge::env::get_str("ANY_VAR")?   # raw string — always available
+```
 
-# Export — identical to set in ForgeScript (all set variables are exported
-# to child processes by default)
-export API_URL = "https://api.forge-shell.dev"
+**Supported typed accessors:**
 
-# Scoped set — visible only within a block
-{
-  set DEBUG = "true"
-  run("my-server")?
+| Accessor | Parses to | Notes |
+|---|---|---|
+| `get_str` | `str` | Raw — always succeeds if var exists |
+| `get_int` | `int` (`i64`) | Fails if not parseable as integer |
+| `get_float` | `float` (`f64`) | Fails if not parseable as float |
+| `get_bool` | `bool` | Accepts `"true"/"false"`, `"1"/"0"`, `"yes"/"no"` |
+| `get_path` | `path` | Normalised at read time |
+| `get_url` | `url` | Validated at read time |
+
+**Parse error format:**
+
+```
+error[E042]: environment variable type mismatch
+  --> deploy.fgs:12:14
+   |
+12 | let port = forge::env::get_int("PORT")?
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: PORT="808O" — expected int, found "808O"
+   = help: check the value of PORT in your environment
+```
+
+#### 2.4 `$PATH` as `list<path>`
+
+The system `PATH` variable is exposed as a typed `list<path>` — not a raw
+string. ForgeScript parses it at startup using the platform-native separator
+(`:` on Unix, `;` on Windows) and owns the typed representation.
+
+```forge
+# Read PATH as typed list
+let paths = forge::env::path()                  # list<path>
+
+# Mutate
+forge::env::path().prepend(p"~/.local/bin")
+forge::env::path().append(p"/usr/local/go/bin")
+
+# Parse a raw PATH string — for migration and external input
+let paths = forge::env::path_from_str(raw)?     # Result<list<path>, EnvError>
+```
+
+**Serialisation:** When ForgeScript spawns a child process, `list<path>` is
+serialised back to the OS-native format transparently — `:` on Unix, `;` on
+Windows. Script authors never handle the separator.
+
+#### 2.5 Environment Variable Scoping
+
+Environment variables follow the Unix process model:
+
+- `forge::env::set()` in a script: **process-wide** — visible to all
+  subsequent code and child processes spawned by this script
+- `set` at the REPL: **session-wide** — visible to all subsequent commands
+  in this shell session
+- Changes **never propagate to the parent shell** — this is a fundamental OS
+  constraint, not a ForgeScript restriction
+
+```forge
+forge::env::set("DATABASE_URL", "postgres://localhost/mydb")
+
+run("psql")      # sees DATABASE_URL ✅
+run("migrate")   # sees DATABASE_URL ✅
+
+# Parent shell that launched this script: never sees DATABASE_URL
+```
+
+**Scoping summary:**
+
+| Context | Scope | Parent sees it? |
+|---|---|---|
+| `forge::env::set()` in script | Process-wide | ❌ Never |
+| `set` at REPL | Session-wide | ❌ Never |
+| `with_env { }` block | Block-scoped — reverts after | ❌ Never |
+| Child process spawned | Inherits parent env | N/A |
+
+#### 2.6 `with_env` — Block-scoped Temporary Overrides
+
+For cases requiring temporary env var overrides without polluting the process
+environment — equivalent to the Unix `env VAR=value command` pattern, but
+typed and explicit:
+
+```forge
+# Override for one block only — reverts after
+with_env { DATABASE_URL: "postgres://localhost/testdb" } {
+    run("cargo test")
 }
-# DEBUG is unset here
+# DATABASE_URL reverts here — previous value restored
 
-# Unset
-unset TEMP_TOKEN
-```
-
-#### 2.4 Variable Scoping Rules
-
-```
-Script scope       — variables set at the top level of a script
-Block scope        — variables set inside { } are dropped when the block exits
-Function scope     — variables set inside fn are dropped when the function returns
-Child processes    — inherit all variables set in parent scope at spawn time
-                     subsequent changes to parent scope do NOT propagate
-```
-
-```forge
-set FOO = "parent"
-
-{
-  set FOO = "block"
-  print($FOO)       # "block"
+# Multiple overrides
+with_env {
+    DATABASE_URL: "postgres://localhost/testdb",
+    LOG_LEVEL:    "debug",
+    PORT:         9090,
+} {
+    run("integration-tests")
 }
-
-print($FOO)         # "parent" — block scope dropped
 ```
 
-#### 2.5 Typed Environment Variable Access
+#### 2.7 `.env` File Loading
 
-Environment variables are always `string` at the OS level. ForgeScript
-provides ergonomic typed access:
+ForgeScript takes an explicit-first approach to `.env` loading — informed by
+Go's philosophy (no magic loading) and direnv's security model (explicit trust
+grants).
+
+**Core principle: `.env` loading is always explicit. No magic directory
+scanning. No automatic loading without developer intent.**
+
+**Explicit loading API:**
 
 ```forge
-# Explicit parse
-let port: int = $PORT?.and_then(|s| s.parse()).unwrap_or(8080)
-
-# Typed access helper (standard library)
-let port = env::get_int("PORT", default: 8080)?
-let debug = env::get_bool("DEBUG", default: false)?
-let hosts = env::get_list("ALLOWED_HOSTS", separator: ",")?
+forge::env::load(p".env")                        # load specific file
+forge::env::load_optional(p".env.local")         # no error if file missing
+forge::env::load_cascade(env: "dev")             # full environment cascade
 ```
 
-#### 2.6 .env File Support
+**Environment cascade — load order (highest precedence first):**
+
+```
+.env.[environment].local    # highest — local machine overrides
+.env.local                  # local machine base
+.env.[environment]          # environment-specific
+.env                        # base — lowest precedence
+```
+
+`FORGE_ENV` environment variable drives the cascade environment:
+
+```bash
+FORGE_ENV=production forge run deploy.fgs
+# load_cascade() loads: .env → .env.local → .env.production → .env.production.local
+```
+
+**Directory auto-run — `.forge-env` script:**
+
+For developers who want automatic env loading when entering a directory,
+ForgeScript uses a `.forge-env` script — a ForgeScript file that the developer
+explicitly writes, granted execution permission via `forge env trust`:
 
 ```forge
-# Load .env file into current scope
-load_env(".env")
-
-# Load with override — existing vars are replaced
-load_env(".env.production", override: true)
-
-# .env format
-# KEY=value
-# KEY="value with spaces"
-# KEY='literal value'
-# # comment
-# export KEY=value  (export keyword is optional and ignored)
+# .forge-env — developer writes exactly what loads
+forge::env::load(p".env")
+forge::env::load_optional(p".env.local")
 ```
 
-`.env` files are UTF-8. CRLF is normalised. BOM is stripped.
-
-#### 2.7 Reserved Variable Names
-
-The following variable names are reserved by Forge Shell:
-
+```bash
+forge env trust          # grant trust to .forge-env in current directory
+forge env trust --list   # list all trusted directories
+forge env trust --revoke # revoke trust for current directory
 ```
-$PATH       Typed [path] list
-$HOME       Home directory as path
-$FORGE_VERSION  Forge Shell version string
-$FORGE_OS       Platform identifier: "linux" | "macos" | "windows"
-$FORGE_ARCH     CPU architecture: "x86_64" | "aarch64" | ...
-$FORGE_SHELL    Path to the forge binary
-$?          Exit code of the last command (int)
-$0          Name of the current script (string)
-$#          Number of arguments passed to the script (int)
-$@          All arguments as a list [string]
+
+Trust grants are stored in `~/.config/forge/trusted-envs.toml` — never in
+the project directory.
+
+**`.gitignore` recommendations** (generated by `forge migrate`):
+
+```gitignore
+.env.local
+.env.*.local
+.forge-env.local
 ```
 
 ---
 
 ## Drawbacks
 
-- **Explicit path construction is verbose** — `path("/usr/bin")` is more
-  typing than `"/usr/bin"`. Power users will find this annoying for one-liners.
-- **PATH-as-list breaks raw string manipulation** — users who know tricks like
-  `export PATH="/new:$PATH"` must learn the new model.
-- **No implicit string-to-path coercion** — some friction when passing paths
-  to functions that expect `string`. Explicit `.to_string()` required.
-- **Case sensitivity model is complex** — the Windows case-insensitive lookup
-  with warning is a pragmatic compromise, not a clean solution.
+- **Construction-time normalisation has a cost.** Every path operation
+  allocates a new normalised string. For scripts that manipulate thousands of
+  paths this may be measurable — mitigated by RFC-008 plan caching.
+- **Typed env var accessors add API surface.** Six typed accessors
+  (`get_str`, `get_int`, `get_float`, `get_bool`, `get_path`, `get_url`)
+  instead of one. Mitigated by the raw `get_str` fallback always being
+  available.
+- **`.forge-env` is unfamiliar.** Developers coming from direnv know `.envrc`.
+  The new name requires documentation and discovery.
 
 ---
 
 ## Alternatives Considered
 
-### Alternative A — Paths as Strings with Helpers
+### Alternative A — Use-time path normalisation
 
-**Approach:** Keep paths as strings but provide `join_path()`, `normalise_path()`
-helper functions.
-**Rejected because:** Without a distinct type, nothing prevents string
-concatenation for paths. The helpers would be advisory, not enforced. The
-majority of path bugs would persist.
+**Rejected:** Inconsistent equality semantics and debugging confusion.
+Construction-time normalisation fails early and produces predictable equality.
 
-### Alternative B — Two Path Types (Unix and Windows)
+### Alternative B — Hard error for Windows reserved filenames everywhere
 
-**Approach:** `UnixPath` and `WindowsPath` as distinct types, with explicit
-conversion between them.
-**Rejected because:** This surfaces platform differences into script logic,
-which is exactly what Forge Shell is trying to prevent. Scripts would need
-`#[cfg]` equivalents to handle both types.
+**Rejected:** Overly restrictive for Linux-only scripts. Warning on
+non-Windows with `forge check --platform=windows` escalation gives developers
+the information they need without blocking legitimate use cases.
 
-### Alternative C — PATH Remains a String
+### Alternative C — Raw string `PATH`
 
-**Approach:** Keep `$PATH` as a colon/semicolon-separated string, provide
-`path_list()` and `path_join()` helpers.
-**Rejected because:** The separator difference is a perennial source of bugs.
-Making PATH a typed list is the only way to make PATH manipulation truly
-cross-platform without requiring the script author to think about separators.
+**Rejected:** The `:` vs `;` separator inconsistency is exactly the class of
+bug ForgeScript is designed to eliminate. `list<path>` with automatic
+OS-native serialisation removes the entire problem class.
+
+### Alternative D — Fully typed env var storage
+
+**Rejected:** Child processes receive strings — always. Fully typed storage
+would require serialisation at every process boundary, creating a leaky
+abstraction. Typed access over string storage is honest and practical.
+
+### Alternative E — Auto-load `.env` by default
+
+**Rejected:** Auto-loading `.env` in a shell is more dangerous than in a web
+framework — the blast radius is larger. Go's explicit-first philosophy and
+direnv's trust model both validate this position. Explicit loading with
+`.forge-env` for auto-run gives developers control without magic.
 
 ---
 
 ## Unresolved Questions
 
-- [ ] Should `path()` accept template strings? `path("/home/{username}/.config")`
-- [ ] Should there be a path literal syntax (e.g. `p"/usr/bin"`) to reduce
-      verbosity?
-- [ ] How should symlink cycles be detected and reported in `canonicalise()`?
-- [ ] Should `$?` be an `int` or a `Result` variant?
-- [ ] Should `.env` loading support variable interpolation? (e.g. `KEY=${OTHER}`)
-- [ ] How are non-UTF-8 paths handled? Reject? Lossy convert? Separate type?
+All previously unresolved questions have been resolved.
+
+| ID | Question | Resolution |
+|---|---|---|
+| UQ-1 | Path normalisation timing | Construction-time — eager, consistent, fail-early |
+| UQ-2 | Windows reserved filenames on non-Windows | Warning on Linux/macOS, hard error on Windows |
+| UQ-3 | `$PATH` as typed list | `list<path>` — typed, OS-native serialisation |
+| UQ-4 | `.env` file loading | Explicit always — `.forge-env` + `forge env trust` for auto-run |
+| UQ-5 | Env var typing | Typed access, string storage — typed accessors parse on read |
+| UQ-6 | Env var scoping | Process-wide by default, `with_env` for block-scoped overrides |
 
 ---
 
@@ -383,37 +414,47 @@ cross-platform without requiring the script author to think about separators.
 
 ### Affected Crates
 
-- `forge-lang/ast` — `PathExpr`, `PathType` AST nodes
-- `forge-lang/hir` — path type inference, env var type resolution
-- `forge-lower` — `lower_path()` implementation per platform
-- `forge-builtins` — `load_env()`, `env::get_int()` etc.
-- `forge-core` — internal `ForgePath` and `EnvMap` types
+| Crate | Responsibility |
+|---|---|
+| `forge-lang/typeck` | `path` type checking, typed env var accessor validation |
+| `forge-lang/hir` | `path` normalisation during HIR lowering |
+| `forge-core/path` | Path normalisation, `/` operator, Windows reserved name validation |
+| `forge-core/env` | Typed env var accessors, `with_env` block, `load_cascade` |
+| `forge-backend/unix` | PATH serialisation — colon-separated |
+| `forge-backend/windows` | PATH serialisation — semicolon-separated, UNC path handling |
+| `forge-lang/diagnostics` | `W021` warning, `E042` type mismatch error |
 
 ### Dependencies
 
-- Requires RFC-001 (ForgeScript Syntax) — type system foundation
-- Requires RFC-002 (Evaluation Pipeline) — `lower_path()` is part of
-  `PlatformLowering`
+- Requires RFC-001 (path literal syntax, `p"..."`) to be accepted first.
+- Requires RFC-002 (evaluation pipeline) to be accepted first.
+- RFC-013 (Shell Configuration Model) handles `config.toml` `[path]` and
+  `[env]` sections — PATH prepend/append config, auto-load settings.
 
 ### Milestones
 
-1. Define `ForgePath` type in `forge-core` using `camino::Utf8PathBuf`
-2. Define `EnvMap` type — case-preserving, case-insensitive lookup on Windows
-3. Implement `path()` constructor with normalisation rules
-4. Implement `/` operator for path arithmetic
-5. Implement all `path` methods
-6. Implement Windows reserved filename detection
-7. Implement `$PATH` as typed list in HIR and execution context
-8. Implement typed env var access helpers
-9. Implement `.env` file loading
-10. Integration tests — path and env behaviour on all three platforms
+1. Implement `forge-core/path` — normalisation, `/` operator, reserved name detection
+2. Implement `W021` warning and `forge check --platform=windows` escalation
+3. Implement `forge::env` typed accessors — `get_int`, `get_bool`, `get_path` etc.
+4. Implement `forge::env::path()` — `list<path>` with OS-native serialisation
+5. Implement `forge::env::path_from_str()` — raw PATH string parsing
+6. Implement `with_env` block scoping
+7. Implement `.env` loading API — `load`, `load_optional`, `load_cascade`
+8. Implement `forge env trust` command and trusted-envs registry
+9. Implement `FORGE_ENV` cascade driver
+10. Integration tests on ubuntu-latest, macos-latest, windows-latest
 
 ---
 
 ## References
 
-- [`camino` crate — UTF-8 typed paths](https://docs.rs/camino)
-- [Windows Reserved File Names](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file)
-- [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html)
+- [POSIX Path Resolution](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap04.html)
+- [Windows Reserved Filenames](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file)
+- [direnv — Unclutter your .profile](https://direnv.net/)
+- [Vite Environment Variables](https://vitejs.dev/guide/env-and-mode)
+- [Go os.Getenv](https://pkg.go.dev/os#Getenv)
 - [The Twelve-Factor App — Config](https://12factor.net/config)
-- [dotenv specification](https://hexdocs.pm/dotenvy/dotenv-file-format.html)
+- [RFC-001 — ForgeScript Language Syntax](./RFC-001-forgescript-syntax.md)
+- [RFC-002 — Evaluation Pipeline](./RFC-002-evaluation-pipeline.md)
+- [RFC-003 — Built-in Command Specification](./RFC-003-builtin-commands.md)
+- [RFC-013 — Shell Configuration Model](./RFC-013-shell-config.md)
