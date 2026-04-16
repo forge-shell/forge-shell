@@ -2,10 +2,10 @@
 
 | Field          | Value                        |
 |----------------|------------------------------|
-| Status         | Draft                        |
+| Status         | **In Review**                |
 | Author         | Ajitem Sahasrabuddhe         |
 | Created        | 2026-04-09                   |
-| Last Updated   | 2026-04-09                   |
+| Last Updated   | 2026-04-15                   |
 | Supersedes     | —                            |
 | Superseded By  | —                            |
 
@@ -14,23 +14,24 @@
 ## Summary
 
 This RFC defines the ForgeScript standard library — the set of modules
-available to every `.fgs` script without installation. The standard library
-covers filesystem operations, string manipulation, environment access,
-process management, networking utilities, JSON/YAML processing, date and time,
-logging, and testing utilities.
+compiled directly into the `forge` binary and available to every `.fgs` script
+without installation. The standard library follows Go-style compatibility
+guarantees: no breaking changes within a major version. The stdlib covers
+filesystem operations, string manipulation, environment access, networking,
+serialisation, cryptography, process management, time, logging, and testing.
 
 ---
 
 ## Motivation
 
 A scripting language without a standard library forces users to reinvent
-common utilities in every script. The standard library should cover the 80%
-of script needs that do not require a plugin, providing a solid foundation
+common utilities in every script. The stdlib covers the 80% of script needs
+that do not require a plugin, providing a solid, always-available foundation
 that script authors can rely on across all three platforms.
 
-The standard library complements built-in commands — where built-ins are
-invokable from the REPL and pipelines, the standard library provides
-programmatic APIs usable within ForgeScript functions.
+The stdlib complements built-in commands — where built-ins are invokable from
+the REPL and pipelines, the stdlib provides programmatic APIs usable within
+ForgeScript functions.
 
 ---
 
@@ -44,10 +45,13 @@ Standard library modules are imported with the `forge::` prefix:
 import forge::fs
 import forge::str
 import forge::env
-import forge::process
 import forge::net
+import forge::codec
 import forge::json
 import forge::yaml
+import forge::toml
+import forge::crypto
+import forge::process
 import forge::time
 import forge::log
 import forge::test
@@ -56,130 +60,408 @@ import forge::test
 Specific symbols can be imported directly:
 
 ```forge
-from forge::fs   import { read_file, write_file, exists }
-from forge::str  import { split, trim, starts_with }
-from forge::time import { now, Duration }
+from forge::fs     import { read_file, write_file, exists }
+from forge::str    import { split, trim, starts_with }
+from forge::crypto import { sha256, hmac_sha256 }
 ```
 
 ---
 
-### 2. Module Definitions
+### 2. Compatibility Guarantee
 
-#### `forge::fs` — Filesystem
+The ForgeScript stdlib follows Go-style compatibility:
+
+> Any `.fgs` script that uses `forge::` stdlib functions and compiles
+> correctly with Forge Shell v1.x will compile and run correctly with any
+> future Forge Shell v1.y release, where y > x.
+
+| Change type | Policy |
+|---|---|
+| Bug fixes | Any patch release — behaviour corrected, API unchanged |
+| New functions added | Any minor release — always backward compatible |
+| New modules added | Any minor release — new imports never break old scripts |
+| Function signature changes | Never within a major version |
+| Function removal | Never within a major version |
+| Security vulnerability fixes | May change behaviour in minor releases — documented |
+
+**Deprecation process:**
+
+```forge
+#[deprecated(since = "1.3.0", replaced_by = "forge::crypto::sha256_file")]
+fn forge::crypto::hash_file(p: path) -> Result<str>
+```
+
+Deprecated functions compile with a warning — never an error. Removed only
+in the next major version (2.x), listed in the migration guide.
+
+**`forge::experimental` namespace** — modules not yet covered by the
+compatibility guarantee:
+
+```forge
+import forge::experimental::net::websocket
+```
+
+Experimental modules can change between minor releases. They graduate to
+`forge::` proper after at least one minor release with no API changes needed.
+
+See RFC-014 for the full release policy and versioning model.
+
+---
+
+### 3. Module Definitions
+
+#### `forge::fs` — File System
 
 ```forge
 # Reading
-forge::fs::read_file(path)          -> Result<string>
-forge::fs::read_bytes(path)         -> Result<[byte]>
-forge::fs::read_lines(path)         -> Result<[string]>
+forge::fs::read_file(p: path)           -> Result<str>
+forge::fs::read_bytes(p: path)          -> Result<list<int>>
+forge::fs::read_lines(p: path)          -> Result<list<str>>
 
 # Writing
-forge::fs::write_file(path, string) -> Result<unit>
-forge::fs::write_bytes(path, bytes) -> Result<unit>
-forge::fs::append_file(path, string)-> Result<unit>
+forge::fs::write_file(p: path, s: str)  -> Result<()>
+forge::fs::write_bytes(p: path, b: list<int>) -> Result<()>
+forge::fs::append_file(p: path, s: str) -> Result<()>
 
-# Filesystem operations
-forge::fs::exists(path)             -> bool
-forge::fs::is_file(path)            -> bool
-forge::fs::is_dir(path)             -> bool
-forge::fs::is_symlink(path)         -> bool
+# Existence and type
+forge::fs::exists(p: path)              -> bool
+forge::fs::is_file(p: path)             -> bool
+forge::fs::is_dir(p: path)              -> bool
+forge::fs::is_symlink(p: path)          -> bool
 
-forge::fs::copy(from, to)           -> Result<unit>
-forge::fs::move(from, to)           -> Result<unit>
-forge::fs::remove(path)             -> Result<unit>
-forge::fs::remove_dir(path)         -> Result<unit>   # must be empty
-forge::fs::remove_all(path)         -> Result<unit>   # recursive
+# Operations
+forge::fs::copy(from: path, to: path)   -> Result<()>
+forge::fs::move(from: path, to: path)   -> Result<()>
+forge::fs::remove(p: path)              -> Result<()>
+forge::fs::remove_dir(p: path)          -> Result<()>   # must be empty
+forge::fs::remove_all(p: path)          -> Result<()>   # recursive
 
-forge::fs::create_dir(path)         -> Result<unit>
-forge::fs::create_dir_all(path)     -> Result<unit>   # mkdir -p equivalent
+forge::fs::create_dir(p: path)          -> Result<()>
+forge::fs::create_dir_all(p: path)      -> Result<()>   # mkdir -p
 
-forge::fs::list_dir(path)           -> Result<[DirEntry]>
-forge::fs::walk_dir(path)           -> Result<[DirEntry]>  # recursive
+forge::fs::list_dir(p: path)            -> Result<list<DirEntry>>
+forge::fs::walk_dir(p: path)            -> Result<list<DirEntry>>  # recursive
 
-forge::fs::temp_file()              -> Result<path>
-forge::fs::temp_dir()               -> Result<path>
+forge::fs::temp_file()                  -> Result<path>
+forge::fs::temp_dir()                   -> Result<path>
 
 # Metadata
-forge::fs::metadata(path)           -> Result<FileMetadata>
-forge::fs::file_size(path)          -> Result<int>
-forge::fs::modified_at(path)        -> Result<DateTime>
-forge::fs::created_at(path)         -> Result<Option<DateTime>>  # None on Linux
+forge::fs::metadata(p: path)            -> Result<FileMetadata>
+forge::fs::file_size(p: path)           -> Result<int>
+forge::fs::modified_at(p: path)         -> Result<DateTime>
 
-# Watching
-forge::fs::watch(path, fn(WatchEvent))  -> WatchHandle
+# Permissions
+forge::fs::permissions(p: path)         -> Result<Permissions>
+forge::fs::set_permissions(p: path, perm: Permissions) -> Result<()>
+
+struct DirEntry {
+    path:     path,
+    name:     str,
+    kind:     FileKind,
+    size:     Option<int>,
+    modified: Option<DateTime>,
+}
+
+enum FileKind { File, Directory, Symlink, Junction }
 ```
 
 ---
 
-#### `forge::str` — String Utilities
+#### `forge::str` — String Manipulation
 
 ```forge
-forge::str::split(s, sep)           -> [string]
-forge::str::split_once(s, sep)      -> Option<(string, string)>
-forge::str::join(parts, sep)        -> string
+# Basic operations
+forge::str::len(s: str)                  -> int
+forge::str::is_empty(s: str)             -> bool
+forge::str::trim(s: str)                 -> str
+forge::str::trim_start(s: str)           -> str
+forge::str::trim_end(s: str)             -> str
+forge::str::to_upper(s: str)             -> str
+forge::str::to_lower(s: str)             -> str
 
-forge::str::trim(s)                 -> string
-forge::str::trim_start(s)           -> string
-forge::str::trim_end(s)             -> string
+# Search
+forge::str::contains(s: str, sub: str)   -> bool
+forge::str::starts_with(s: str, prefix: str) -> bool
+forge::str::ends_with(s: str, suffix: str)   -> bool
+forge::str::find(s: str, sub: str)       -> Option<int>
+forge::str::count(s: str, sub: str)      -> int
 
-forge::str::starts_with(s, prefix)  -> bool
-forge::str::ends_with(s, suffix)    -> bool
-forge::str::contains(s, needle)     -> bool
+# Manipulation
+forge::str::replace(s: str, from: str, to: str)     -> str
+forge::str::replace_all(s: str, from: str, to: str) -> str
+forge::str::split(s: str, sep: str)      -> list<str>
+forge::str::join(parts: list<str>, sep: str) -> str
+forge::str::repeat(s: str, n: int)       -> str
+forge::str::pad_left(s: str, n: int, ch: str)  -> str
+forge::str::pad_right(s: str, n: int, ch: str) -> str
+forge::str::truncate(s: str, n: int)     -> str
 
-forge::str::replace(s, from, to)    -> string
-forge::str::replace_all(s, from, to)-> string
+# Parsing
+forge::str::parse_int(s: str)            -> Result<int>
+forge::str::parse_float(s: str)          -> Result<float>
+forge::str::parse_bool(s: str)           -> Result<bool>
 
-forge::str::to_upper(s)             -> string
-forge::str::to_lower(s)             -> string
+# Regex — RE2 flavour (linear time, no catastrophic backtracking)
+forge::str::matches(s: str, pattern: regex)               -> bool
+forge::str::find_regex(s: str, pattern: regex)             -> Option<Match>
+forge::str::find_all(s: str, pattern: regex)               -> list<Match>
+forge::str::captures(s: str, pattern: regex)               -> Option<Captures>
+forge::str::captures_all(s: str, pattern: regex)           -> list<Captures>
+forge::str::replace_regex(s: str, pattern: regex, rep: str)     -> str
+forge::str::replace_all_regex(s: str, pattern: regex, rep: str) -> str
+forge::str::split_regex(s: str, pattern: regex)            -> list<str>
 
-forge::str::pad_left(s, width, char)  -> string
-forge::str::pad_right(s, width, char) -> string
+struct Match    { text: str, start: int, end: int }
+struct Captures { full: Match, groups: list<Option<Match>> }
+```
 
-forge::str::repeat(s, n)            -> string
-forge::str::reverse(s)              -> string
+**Regex flavour:** RE2 — guaranteed linear time execution, no catastrophic
+backtracking. Supports named capture groups `(?P<name>...)`. Does not support
+lookahead, lookbehind, or backreferences. Implementation: Rust `regex` crate.
 
-forge::str::parse_int(s)            -> Result<int>
-forge::str::parse_float(s)          -> Result<float>
-forge::str::parse_bool(s)           -> Result<bool>
+---
 
-forge::str::lines(s)                -> [string]
-forge::str::chars(s)                -> [string]
-forge::str::bytes(s)                -> [byte]
+#### `forge::env` — Environment Variables
 
-forge::str::len(s)                  -> int   # character count (not bytes)
-forge::str::byte_len(s)             -> int   # byte count
+As specified in RFC-004. Typed accessors over string storage.
 
-# Regex (basic)
-forge::str::matches(s, pattern)     -> bool
-forge::str::find(s, pattern)        -> Option<Match>
-forge::str::find_all(s, pattern)    -> [Match]
-forge::str::replace_regex(s, pattern, replacement) -> string
+```forge
+forge::env::get_str(key: str)    -> Result<str>
+forge::env::get_int(key: str)    -> Result<int>
+forge::env::get_float(key: str)  -> Result<float>
+forge::env::get_bool(key: str)   -> Result<bool>
+forge::env::get_path(key: str)   -> Result<path>
+forge::env::get_url(key: str)    -> Result<url>
+
+forge::env::set(key: str, value: any) -> ()
+forge::env::unset(key: str)           -> ()
+forge::env::exists(key: str)          -> bool
+forge::env::all()                     -> map<str, str>
+
+forge::env::path()                    -> list<path>
+forge::env::path_from_str(s: str)     -> Result<list<path>>
+
+forge::env::load(p: path)             -> Result<()>
+forge::env::load_optional(p: path)    -> Result<()>
+forge::env::load_cascade(env: str)    -> Result<()>
 ```
 
 ---
 
-#### `forge::env` — Environment
+#### `forge::net` — Networking
+
+Comprehensive networking following Go's philosophy — full primitives in stdlib.
 
 ```forge
-forge::env::get(key)                -> Option<string>
-forge::env::get_or(key, default)    -> string
-forge::env::get_int(key, default)   -> int
-forge::env::get_bool(key, default)  -> bool
-forge::env::get_list(key, sep)      -> [string]
-forge::env::get_path(key)           -> Option<path>
+# HTTP
+forge::net::get(url: url)                                     -> Result<HttpResponse>
+forge::net::post(url: url, body: str)                         -> Result<HttpResponse>
+forge::net::request(method: str, url: url, opts: HttpOpts)    -> Result<HttpResponse>
 
-forge::env::set(key, value)         -> unit
-forge::env::unset(key)              -> unit
-forge::env::all()                   -> {string: string}
+struct HttpResponse { status: int, headers: map<str, str>, body: str, bytes: list<int> }
+struct HttpOpts     { headers: map<str, str>, body: Option<str>, timeout_ms: Option<int> }
 
-forge::env::load_dotenv(file)       -> Result<unit>
-forge::env::load_dotenv_override(file) -> Result<unit>
+# TCP/UDP
+forge::net::dial(network: str, address: str)                  -> Result<Connection>
+forge::net::listen(network: str, address: str)                -> Result<Listener>
+forge::net::dial_tls(address: str, config: TlsConfig)         -> Result<Connection>
 
-forge::env::platform()              -> string   # "linux" | "macos" | "windows"
-forge::env::arch()                  -> string   # "x86_64" | "aarch64" | ...
-forge::env::home()                  -> path
-forge::env::cwd()                   -> path
-forge::env::temp_dir()              -> path
+# Unix domain sockets — Linux/macOS only, documented limitation on Windows
+forge::net::dial_unix(p: path)                                -> Result<Connection>
+
+# DNS — unified lookup with typed record enum
+forge::net::lookup(domain: str, record: DnsRecord)            -> Result<list<DnsResult>>
+forge::net::resolve(hostname: str)                            -> Result<list<str>>   # A + AAAA
+
+enum DnsRecord { A, AAAA, MX, TXT, CNAME, NS, PTR, SOA, SRV }
+
+enum DnsResult {
+    A(str),
+    AAAA(str),
+    MX     { priority: int, exchange: str },
+    TXT    (str),
+    CNAME  (str),
+    NS     (str),
+    PTR    (str),
+    SOA    { mname: str, rname: str, serial: u32 },
+    SRV    { priority: int, weight: int, port: int, target: str },
+}
+
+# IP utilities
+forge::net::parse_ip(s: str)                                  -> Result<IpAddr>
+forge::net::parse_cidr(s: str)                                -> Result<CidrBlock>
+```
+
+**Multiple records:** `lookup` returns `Result<list<DnsResult>>` — multiple
+MX, TXT, NS records are returned as multiple list elements naturally.
+
+**Platform note:** `dial_unix` is not supported on Windows — returns
+`Err(CommandError::PlatformUnsupported)` with a clear message.
+
+---
+
+#### `forge::codec` — Serialisation Trait System
+
+A serde-inspired trait system. The `Format` trait is implemented by `forge::json`,
+`forge::yaml`, `forge::toml`, and optionally by plugins.
+
+```forge
+# Core traits
+trait Serialize {
+    fn serialize(self) -> Result<Value>
+}
+
+trait Deserialize {
+    fn deserialize(v: Value) -> Result<Self>
+}
+
+trait Format {
+    fn encode(v: Value) -> Result<str>
+    fn decode(s: str)   -> Result<Value>
+}
+
+# Universal intermediate representation
+enum Value {
+    Null,
+    Bool(bool),
+    Int(int),
+    Float(float),
+    Str(str),
+    List(list<Value>),
+    Map(map<str, Value>),
+}
+
+# Top-level functions
+forge::codec::to_str(v: Serialize, fmt: Format)              -> Result<str>
+forge::codec::from_str(s: str, fmt: Format)                  -> Result<Value>
+forge::codec::to_file(v: Serialize, p: path, fmt: Format)    -> Result<()>
+forge::codec::from_file(p: path, fmt: Format)                -> Result<Value>
+forge::codec::transcode(s: str, from: Format, to: Format)    -> Result<str>
+```
+
+**`#[derive(Serialize, Deserialize)]`** — automatic derivation for structs
+and enums:
+
+```forge
+#[derive(Serialize, Deserialize)]
+struct DeployConfig {
+    env:      str,
+    replicas: int,
+    image:    str,
+}
+
+let config  = DeployConfig { env: "prod", replicas: 3, image: "forge:1.0" }
+let json    = forge::codec::to_str(config, forge::json::Format)?
+let yaml    = forge::codec::to_str(config, forge::yaml::Format)?
+let back    = forge::codec::from_str(json, forge::json::Format)? as DeployConfig
+```
+
+**Plugin-extensible:** Third-party plugins can implement `Format` — `forge-csv`,
+`forge-msgpack`, `forge-cbor`, `forge-dotenv` etc. — and integrate seamlessly
+with `forge::codec::transcode`.
+
+---
+
+#### `forge::json` — JSON
+
+Implements `forge::codec::Format`. Additional JSON-specific utilities.
+
+```forge
+# Implements Format — works with forge::codec::*
+forge::json::Format    # the format token — passed to forge::codec functions
+
+# JSON-specific extras
+forge::json::get(v: Value, path: str)           -> Option<Value>   # jq-style path
+forge::json::get_all(v: Value, path: str)        -> list<Value>
+forge::json::pretty(v: Value)                   -> Result<str>
+forge::json::merge(base: Value, overlay: Value) -> Value           # deep merge
+forge::json::validate(v: Value, schema: Value)  -> Result<()>      # JSON Schema
+```
+
+---
+
+#### `forge::yaml` — YAML
+
+Implements `forge::codec::Format`.
+
+```forge
+forge::yaml::Format      # the format token
+
+# YAML-specific extras
+forge::yaml::parse_multi(s: str) -> Result<list<Value>>   # multi-document YAML
+```
+
+---
+
+#### `forge::toml` — TOML
+
+Implements `forge::codec::Format`.
+
+```forge
+forge::toml::Format      # the format token
+
+# TOML-specific extras
+forge::toml::parse_datetime(s: str) -> Result<DateTime>   # TOML datetime type
+```
+
+---
+
+#### `forge::crypto` — Cryptographic Primitives
+
+Comprehensive crypto in stdlib — Go-inspired. Primitives only — protocol-level
+crypto (JWT, PGP, X.509) is plugin territory. Implementation: `ring` crate
+(Google's BoringSSL-based, extensively audited).
+
+```forge
+# Hashing
+forge::crypto::sha256(data: str)               -> str          # hex digest
+forge::crypto::sha256_bytes(data: str)         -> list<int>    # raw bytes
+forge::crypto::sha512(data: str)               -> str
+forge::crypto::sha512_bytes(data: str)         -> list<int>
+forge::crypto::md5(data: str)                  -> str          # legacy only
+
+# File hashing — mirrors hash built-in command
+forge::crypto::sha256_file(p: path)            -> Result<str>
+forge::crypto::sha512_file(p: path)            -> Result<str>
+
+# HMAC
+forge::crypto::hmac_sha256(key: str, data: str) -> str
+forge::crypto::hmac_sha512(key: str, data: str) -> str
+
+# Symmetric encryption
+forge::crypto::aes_encrypt(key: str, data: str) -> Result<str>
+forge::crypto::aes_decrypt(key: str, data: str) -> Result<str>
+
+# Asymmetric — Ed25519 (same algorithm used for plugin signing)
+forge::crypto::ed25519_keygen()                            -> KeyPair
+forge::crypto::ed25519_sign(key: PrivateKey, data: str)    -> str
+forge::crypto::ed25519_verify(key: PublicKey, data: str, sig: str) -> bool
+
+# Cryptographically secure random
+forge::crypto::random_bytes(n: int)            -> list<int>
+forge::crypto::random_hex(n: int)              -> str
+
+# Constant-time comparison — prevents timing attacks
+forge::crypto::constant_eq(a: str, b: str)     -> bool
+
+# Encoding — commonly paired with crypto
+forge::crypto::base64_encode(data: str)        -> str
+forge::crypto::base64_decode(s: str)           -> Result<str>
+forge::crypto::hex_encode(data: str)           -> str
+forge::crypto::hex_decode(s: str)              -> Result<str>
+
+struct KeyPair    { public: PublicKey, private: PrivateKey }
+struct PublicKey  { bytes: list<int> }
+struct PrivateKey { bytes: list<int> }
+```
+
+**Plugin territory — protocol-level crypto:**
+
+```
+forge-jwt        → JWT creation and validation
+forge-pgp        → PGP signing and verification
+forge-x509       → X.509 certificate handling
+forge-ssh-agent  → SSH agent protocol
 ```
 
 ---
@@ -187,265 +469,206 @@ forge::env::temp_dir()              -> path
 #### `forge::process` — Process Management
 
 ```forge
-# Execution
-forge::process::run(cmd, args)      -> Result<Output>
-forge::process::run_str(cmd_str)    -> Result<Output>
-forge::process::spawn(cmd, args)    -> Result<Child>
-forge::process::exec(cmd, args)     -> !   # replaces current process
+# Run and wait
+forge::process::run(cmd: str, args: list<str>)               -> Result<ProcessOutput>
+forge::process::run_shell(cmd: str)                          -> Result<ProcessOutput>
 
-# Output struct
-struct Output {
-  stdout:    string
-  stderr:    string
-  exit_code: int
-  success:   bool
-}
+# Capture output
+forge::process::capture(cmd: str, args: list<str>)           -> Result<str>
+forge::process::capture_stderr(cmd: str, args: list<str>)    -> Result<str>
 
-# Child process
-child.wait()                        -> Result<ExitStatus>
-child.kill()                        -> Result<unit>
-child.pid()                         -> int
-child.stdin()                       -> OutputStream
-child.stdout()                      -> InputStream
+# Spawn without waiting
+forge::process::spawn(cmd: str, args: list<str>)             -> Result<Child>
+forge::process::spawn_with_env(cmd: str, args: list<str>, env: map<str, str>) -> Result<Child>
+
+# Child process management
+forge::process::wait(child: Child)                           -> Result<ProcessOutput>
+forge::process::kill(child: Child)                           -> Result<()>
+forge::process::pid(child: Child)                            -> int
 
 # Current process
-forge::process::exit(code)          -> !
-forge::process::pid()               -> int
-forge::process::args()              -> [string]
+forge::process::exit(code: int)                              -> !   # never returns
+forge::process::args()                                       -> list<str>
 
-# Signal handling (Unix — graceful degradation on Windows)
-forge::process::on_interrupt(fn())  -> unit
-forge::process::on_terminate(fn())  -> unit
+struct ProcessOutput { exit_code: int, stdout: str, stderr: str, success: bool }
 ```
 
 ---
 
-#### `forge::net` — Networking Utilities
-
-```forge
-# HTTP (simple client — not a full HTTP library)
-forge::net::get(url)                -> Result<Response>
-forge::net::post(url, body)         -> Result<Response>
-forge::net::request(Request)        -> Result<Response>
-
-struct Response {
-  status:  int
-  headers: {string: string}
-  body:    string
-}
-
-struct Request {
-  method:  string
-  url:     string
-  headers: {string: string}
-  body:    Option<string>
-  timeout: Option<Duration>
-}
-
-# DNS
-forge::net::resolve(hostname)       -> Result<[string]>   # IP addresses
-
-# Ports
-forge::net::is_port_open(host, port) -> bool
-```
-
----
-
-#### `forge::json` — JSON Processing
-
-```forge
-# Parse
-forge::json::parse(s)               -> Result<Value>
-forge::json::parse_file(path)       -> Result<Value>
-
-# Serialise
-forge::json::to_string(value)       -> string
-forge::json::to_string_pretty(value)-> string
-forge::json::to_file(path, value)   -> Result<unit>
-
-# Query (JQ-style path access)
-forge::json::get(value, path)       -> Option<Value>
-forge::json::get_str(value, path)   -> Option<string>
-forge::json::get_int(value, path)   -> Option<int>
-
-# Value type
-enum Value {
-  Null
-  Bool(bool)
-  Int(int)
-  Float(float)
-  String(string)
-  Array([Value])
-  Object({string: Value})
-}
-```
-
----
-
-#### `forge::yaml` — YAML Processing
-
-```forge
-forge::yaml::parse(s)               -> Result<Value>
-forge::yaml::parse_file(path)       -> Result<Value>
-forge::yaml::to_string(value)       -> string
-forge::yaml::to_file(path, value)   -> Result<unit>
-
-# YAML uses the same Value type as forge::json
-```
-
----
-
-#### `forge::time` — Date and Time
+#### `forge::time` — Time and Duration
 
 ```forge
 # Current time
-forge::time::now()                  -> DateTime
-forge::time::now_utc()              -> DateTime
+forge::time::now()                                           -> DateTime
+forge::time::now_utc()                                       -> DateTime
 
-# Constructors
-forge::time::from_unix(secs)        -> DateTime
-forge::time::parse(s, format)       -> Result<DateTime>
+# Duration construction — d"..." literal deferred to post-v1
+forge::time::duration_ms(ms: int)                            -> Duration
+forge::time::duration_secs(s: int)                           -> Duration
+forge::time::duration_mins(m: int)                           -> Duration
+forge::time::duration_hours(h: int)                          -> Duration
 
-# DateTime methods
-dt.format(fmt)                      -> string
-dt.unix_timestamp()                 -> int
-dt.year()                           -> int
-dt.month()                          -> int
-dt.day()                            -> int
-dt.hour()                           -> int
-dt.minute()                         -> int
-dt.second()                         -> int
-dt.add(Duration)                    -> DateTime
-dt.sub(Duration)                    -> DateTime
-dt.diff(other)                      -> Duration
+# DateTime operations
+forge::time::add(dt: DateTime, d: Duration)                  -> DateTime
+forge::time::sub(dt: DateTime, d: Duration)                  -> DateTime
+forge::time::diff(a: DateTime, b: DateTime)                  -> Duration
+forge::time::before(a: DateTime, b: DateTime)                -> bool
+forge::time::after(a: DateTime, b: DateTime)                 -> bool
 
-# Duration
-Duration::seconds(n)                -> Duration
-Duration::minutes(n)                -> Duration
-Duration::hours(n)                  -> Duration
-Duration::days(n)                   -> Duration
+# Formatting and parsing
+forge::time::format(dt: DateTime, layout: str)               -> str
+forge::time::parse(s: str, layout: str)                      -> Result<DateTime>
+forge::time::unix(dt: DateTime)                              -> int   # Unix timestamp
+forge::time::from_unix(ts: int)                              -> DateTime
 
-dur.as_seconds()                    -> int
-dur.as_minutes()                    -> float
-dur.as_hours()                      -> float
+# Sleeping
+forge::time::sleep(d: Duration)                              -> ()
 
-# Timing
-forge::time::sleep(Duration)        -> unit
-forge::time::measure(fn())          -> (result, Duration)
+struct DateTime { ... }   # opaque — use format/parse for string conversion
+struct Duration { ms: int }
 ```
+
+**Note:** `d"..."` duration literals are deferred to post-v1 (RFC-001). Until
+then, use `forge::time::duration_secs(30)` etc.
 
 ---
 
-#### `forge::log` — Logging
+#### `forge::log` — Structured Logging
 
 ```forge
-forge::log::debug(msg)              -> unit
-forge::log::info(msg)               -> unit
-forge::log::warn(msg)               -> unit
-forge::log::error(msg)              -> unit
+forge::log::debug(msg: str)                                  -> ()
+forge::log::info(msg: str)                                   -> ()
+forge::log::warn(msg: str)                                   -> ()
+forge::log::error(msg: str)                                  -> ()
 
-# Structured logging
-forge::log::info_with(msg, {string: Value})  -> unit
+# Structured logging with fields
+forge::log::debug_fields(msg: str, fields: map<str, Value>)  -> ()
+forge::log::info_fields(msg: str, fields: map<str, Value>)   -> ()
+forge::log::warn_fields(msg: str, fields: map<str, Value>)   -> ()
+forge::log::error_fields(msg: str, fields: map<str, Value>)  -> ()
 
 # Log level control
-forge::log::set_level(LogLevel)     -> unit
-forge::log::get_level()             -> LogLevel
+forge::log::set_level(level: LogLevel)                       -> ()
+forge::log::get_level()                                      -> LogLevel
 
-enum LogLevel { Debug, Info, Warn, Error, Off }
+enum LogLevel { Debug, Info, Warn, Error }
+```
 
-# Default output: stderr
-# Configurable via $FORGE_LOG_LEVEL environment variable
+Log output format — configurable in `config.toml`:
+
+```toml
+[log]
+format = "text"    # "text" | "json"
+level  = "info"    # "debug" | "info" | "warn" | "error"
 ```
 
 ---
 
-#### `forge::test` — Testing Utilities
+#### `forge::test` — Testing Primitives
 
 ```forge
 # Assertions
-forge::test::assert(condition, msg)           -> unit
-forge::test::assert_eq(a, b)                  -> unit
-forge::test::assert_ne(a, b)                  -> unit
-forge::test::assert_ok(result)                -> unit
-forge::test::assert_err(result)               -> unit
-forge::test::assert_contains(s, substring)    -> unit
-forge::test::assert_matches(s, pattern)       -> unit
+forge::test::assert(condition: bool, msg: str)               -> ()
+forge::test::assert_eq(a: any, b: any, msg: str)             -> ()
+forge::test::assert_ne(a: any, b: any, msg: str)             -> ()
+forge::test::assert_ok(result: Result<any>)                  -> ()
+forge::test::assert_err(result: Result<any>)                 -> ()
+forge::test::assert_contains(s: str, sub: str)               -> ()
+forge::test::assert_matches(s: str, pattern: regex)          -> ()
 
-# Test definition
+# Test runner integration
 #[test]
-fn test_deploy_staging() {
-  let result = deploy("staging", dry_run: true)
-  forge::test::assert_ok(result)
+fn my_test() -> Result<()> {
+    forge::test::assert_eq(1 + 1, 2, "arithmetic works")
+    Ok(())
 }
+```
 
-# Test fixtures
-forge::test::temp_dir()             -> path    # auto-cleaned after test
-forge::test::fixture(name)          -> path    # load from tests/fixtures/
+Run tests with `forge test`:
 
-# Running tests
-# forge test                        — runs all #[test] functions
-# forge test test_deploy_*          — runs matching tests
-# forge test --verbose              — show output for passing tests
+```bash
+forge test                    # run all tests in current directory
+forge test ./scripts/         # run tests in directory
+forge test --verbose          # verbose output
+forge test --filter deploy    # run tests matching pattern
 ```
 
 ---
 
-### 3. Standard Library Availability
+### 4. Module Summary Table
 
-The standard library is built into the Forge Shell binary. It requires no
-import installation and is always available offline. All modules are
-implemented in Rust within `forge-builtins` and exposed to ForgeScript via
-the FFI bridge in `forge-lang`.
-
-All standard library functions are cross-platform. Functions that have
-platform-specific behaviour (e.g. `forge::fs::created_at` returns `None` on
-Linux) document this explicitly.
+| Module | Responsibility | v1 |
+|---|---|---|
+| `forge::fs` | File system operations | ✅ |
+| `forge::str` | String manipulation, RE2 regex | ✅ |
+| `forge::env` | Environment variable access | ✅ |
+| `forge::net` | HTTP, TCP/UDP, DNS, TLS, IP utilities | ✅ |
+| `forge::codec` | Serialisation trait — Serialize, Deserialize, Format | ✅ |
+| `forge::json` | JSON format + get, pretty, validate, merge | ✅ |
+| `forge::yaml` | YAML format + parse_multi | ✅ |
+| `forge::toml` | TOML format + parse_datetime | ✅ |
+| `forge::crypto` | Hashing, HMAC, AES, Ed25519, random, encoding | ✅ |
+| `forge::process` | Process spawning and management | ✅ |
+| `forge::time` | Time and duration | ✅ |
+| `forge::log` | Structured logging | ✅ |
+| `forge::test` | Testing primitives | ✅ |
+| `forge::experimental` | Unstable modules — not covered by guarantee | ✅ |
 
 ---
 
 ## Drawbacks
 
-- **Large implementation surface** — a full standard library is significant
-  ongoing work.
-- **API stability commitment** — once shipped, standard library APIs are
-  effectively permanent. Deprecation is possible but painful.
-- **Scope creep risk** — the boundary between standard library and plugin
-  territory is blurry. Clear criteria are needed: if it requires network
-  access to a third-party service, it's a plugin. If it's a general utility
-  available offline, it's stdlib.
+- **Stdlib updates require a Forge Shell upgrade.** There is no way to get a
+  stdlib patch without upgrading the binary. Mitigated by the semver patch
+  release model — security fixes ship quickly as patch releases.
+- **`forge::codec` adds design complexity.** The trait system is more
+  sophisticated than three independent modules. Mitigated by `#[derive]`
+  making the common case simple.
+- **`forge::net` is comprehensive.** A large networking stdlib means more
+  surface area to maintain and audit. Mitigated by using battle-tested
+  underlying Rust crates (`reqwest`, `tokio`).
 
 ---
 
 ## Alternatives Considered
 
-### Alternative A — Minimal Stdlib, Everything Else via Plugins
+### Alternative A — Minimal Stdlib (fs, env, process only)
 
-**Approach:** stdlib is just `forge::fs`, `forge::env`, `forge::process`.
-Everything else (json, yaml, net, time) is a plugin.
-**Rejected because:** JSON processing and time utilities are needed in almost
-every non-trivial script. Requiring a plugin install for `forge::json` creates
-unnecessary friction and breaks offline usage.
+**Rejected:** JSON and networking are needed in almost every non-trivial
+DevOps script. Requiring plugin installs for `forge::json` creates friction
+and breaks offline usage.
 
-### Alternative B — No Stdlib, Use Shell Pipeline Composition
+### Alternative B — Three Separate Serialisation Modules (no forge::codec)
 
-**Approach:** ForgeScript scripts compose built-in commands via pipelines
-instead of calling library functions.
-**Rejected because:** Pipeline composition is appropriate for simple
-transformations. Complex logic (parsing JSON, computing time deltas,
-writing structured logs) requires proper API access within script functions.
+**Rejected:** Three modules that happen to share a `Value` type is less
+elegant than a trait system. `forge::codec` enables plugins to add new formats
+and enables `transcode` across all formats uniformly.
+
+### Alternative C — PCRE Regex
+
+**Rejected:** PCRE's catastrophic backtracking is a ReDoS attack vector.
+RE2's linear time guarantee is the correct choice for a shell where user
+input is common. Go's `regexp` makes the same choice.
+
+### Alternative D — Plugin-Based Crypto
+
+**Rejected:** Security-critical code belongs in the stdlib where it is
+maintained by the core team, receives security audits, and is always available.
+Go's comprehensive `crypto/*` stdlib is the right model.
 
 ---
 
 ## Unresolved Questions
 
-- [ ] Should `forge::net` be in the standard library or a plugin? It requires
-      outbound network access which feels plugin-like.
-- [ ] Should `forge::yaml` be in stdlib? YAML is common in DevOps but not
-      universal.
-- [ ] What regex flavour does `forge::str` support? PCRE? RE2? A subset?
-- [ ] Should there be a `forge::crypto` module for hashing (SHA-256, etc)?
-- [ ] How are stdlib updates delivered? They are part of the Forge binary —
-      stdlib updates require a Forge Shell upgrade.
+All previously unresolved questions have been resolved.
+
+| ID | Question | Resolution |
+|---|---|---|
+| UQ-1 | `forge::net` stdlib or plugin? | Comprehensive stdlib — Go philosophy |
+| UQ-2 | `forge::yaml` in stdlib? | Yes — plus `forge::toml` and `forge::codec` |
+| UQ-3 | Regex flavour | RE2 — Rust `regex` crate |
+| UQ-4 | `forge::crypto` module? | Yes — comprehensive, `ring` crate |
+| UQ-5 | Stdlib update model | Go-style compatibility — see RFC-014 |
 
 ---
 
@@ -453,35 +676,61 @@ writing structured logs) requires proper API access within script functions.
 
 ### Affected Crates
 
-- `forge-builtins` — stdlib implementations in Rust
-- `forge-lang` — stdlib module imports, FFI bridge to Rust implementations
-- `forge-cli` — `forge test` subcommand
+| Crate | Responsibility |
+|---|---|
+| `forge-stdlib/fs` | `forge::fs` implementation |
+| `forge-stdlib/str` | `forge::str` + regex via `regex` crate |
+| `forge-stdlib/env` | `forge::env` — extends RFC-004 implementation |
+| `forge-stdlib/net` | `forge::net` — HTTP via `reqwest`, TCP via `tokio::net` |
+| `forge-stdlib/codec` | `forge::codec` trait definitions and `Value` type |
+| `forge-stdlib/json` | `forge::json` — Format impl via `serde_json` |
+| `forge-stdlib/yaml` | `forge::yaml` — Format impl via `serde_yaml` |
+| `forge-stdlib/toml` | `forge::toml` — Format impl via `toml` crate |
+| `forge-stdlib/crypto` | `forge::crypto` — via `ring` crate |
+| `forge-stdlib/process` | `forge::process` — via `tokio::process` |
+| `forge-stdlib/time` | `forge::time` — via `chrono` crate |
+| `forge-stdlib/log` | `forge::log` — via `tracing` crate |
+| `forge-stdlib/test` | `forge::test` + `forge test` command |
+| `forge-lang/hir` | Stdlib module resolution at HIR stage |
+| `forge-lang/derive` | `#[derive(Serialize, Deserialize)]` macro |
 
 ### Dependencies
 
-- Requires RFC-001 (ForgeScript Syntax) — type system defines stdlib
-  function signatures
-- Requires RFC-002 (Evaluation Pipeline) — stdlib functions are resolved
-  at the HIR stage
+- Requires RFC-001 (ForgeScript syntax) — type system, `#[derive]` annotation
+- Requires RFC-002 (evaluation pipeline) — stdlib resolved at HIR stage
+- Requires RFC-004 (path & env model) — `forge::env` and `forge::fs` extend it
+- Requires RFC-014 (release policy) — compatibility guarantee reference
 
 ### Milestones
 
-1. Implement `forge::env` — simplest module, needed early
-2. Implement `forge::str` — needed for any non-trivial scripting
-3. Implement `forge::fs` — mirrors built-in commands as programmatic APIs
-4. Implement `forge::process` — run/spawn/exec from script functions
-5. Implement `forge::json` — needed for cloud/DevOps workflows
-6. Implement `forge::log` — structured logging for scripts
-7. Implement `forge::test` + `forge test` command
-8. Implement `forge::time`
-9. Implement `forge::yaml`
-10. Implement `forge::net` (if included in stdlib — see unresolved questions)
+1. Implement `forge::env` — extends RFC-004, needed earliest
+2. Implement `forge::fs` — programmatic API over RFC-004 path primitives
+3. Implement `forge::str` — string ops + RE2 regex via `regex` crate
+4. Implement `forge::codec` — trait system + `Value` enum
+5. Implement `forge::json` — Format impl + extras
+6. Implement `forge::yaml` — Format impl
+7. Implement `forge::toml` — Format impl
+8. Implement `forge::process` — process spawning via `tokio::process`
+9. Implement `forge::net` — HTTP via `reqwest`, TCP/UDP/DNS via `tokio::net`
+10. Implement `forge::crypto` — via `ring` crate
+11. Implement `forge::time` — via `chrono`
+12. Implement `forge::log` — via `tracing`
+13. Implement `forge::test` + `forge test` command
+14. Implement `#[derive(Serialize, Deserialize)]` macro in `forge-lang/derive`
+15. Integration tests for all modules on ubuntu-latest, macos-latest, windows-latest
 
 ---
 
 ## References
 
-- [Deno Standard Library](https://deno.land/std)
 - [Go Standard Library](https://pkg.go.dev/std)
-- [Nushell Standard Library](https://www.nushell.sh/book/standard_library.html)
-- [Python Standard Library](https://docs.python.org/3/library/)
+- [Go Compatibility Promise](https://go.dev/doc/go1compat)
+- [Deno Standard Library](https://deno.land/std)
+- [Rust `regex` crate — RE2-compatible](https://docs.rs/regex)
+- [ring — Cryptographic library](https://docs.rs/ring)
+- [Sigstore — used for Ed25519 in RFC-009](https://www.sigstore.dev/)
+- [reqwest — HTTP client](https://docs.rs/reqwest)
+- [tokio — Async runtime](https://tokio.rs/)
+- [RFC-001 — ForgeScript Syntax](./RFC-001-forgescript-syntax.md)
+- [RFC-004 — Path & Environment Model](./RFC-004-path-and-env.md)
+- [RFC-014 — Release Policy & Versioning](./RFC-014-release-policy.md)
