@@ -2,7 +2,7 @@
 
 | Field          | Value                        |
 |----------------|------------------------------|
-| Status         | **Draft**                    |
+| Status         | **In Review**                |
 | Author         | Ajitem Sahasrabuddhe         |
 | Created        | 2026-04-15                   |
 | Last Updated   | 2026-04-15                   |
@@ -17,18 +17,19 @@ This RFC defines the ForgeScript interactive shell — the REPL layer that sits
 between user keystrokes and the ForgeScript parser. The REPL uses identical
 ForgeScript syntax to `.fgs` scripts — there is no separate interactive mode.
 The REPL layer adds quality-of-life features: tab completion, fuzzy path
-completion, history, syntax highlighting, autosuggestions, and inline error
-hints — without introducing a different language.
+completion, history, syntax highlighting, autosuggestions, inline error hints,
+and a headless mode for testing. Plugin completions load in the background
+after the shell becomes interactive, with a disk cache for subsequent starts.
 
 ---
 
 ## Motivation
 
 A shell is only as good as its interactive experience. bash and zsh are
-tolerable because decades of plugins (Oh My Zsh, Prezto, Starship) have
-papered over their rough edges. Fish Shell built quality interactive
-experience into the shell itself. ForgeScript takes Fish's lesson seriously —
-the interactive experience is first-class, not an afterthought.
+tolerable because decades of plugins have papered over their rough edges.
+Fish Shell built quality interactive experience into the shell itself.
+ForgeScript takes Fish's lesson seriously — the interactive experience is
+first-class, not an afterthought.
 
 The key design decision: **one syntax, everywhere**. What works at the prompt
 works in scripts. The REPL layer is purely additive — it enhances the
@@ -53,91 +54,152 @@ Evaluation Pipeline — identical to script execution
 The REPL layer is not a separate parser. It is a quality-of-life wrapper
 around the standard ForgeScript evaluation pipeline.
 
+---
+
 ### 2. Syntax — Unified with Scripts
 
 All three invocation forms are valid at the prompt — identical to scripts:
 
-```
-# Positional
+```forge
 ls /home/user
-
-# POSIX-style flags
 ls /home/user --show_hidden --sort name
-
-# Named typed arguments
 ls path: p"/home/user", show_hidden: true, sort: "name"
 ```
 
 Positional type inference rules (RFC-001 Section 17) apply at the prompt
-identically to scripts.
+identically to scripts. Output mode at the REPL is always `RichTerminal`.
 
-### 3. Tab Completion
+---
 
-Context-aware completion — the REPL knows the type expected at each position:
+### 3. Terminal Support
+
+**Colour depth detection — progressive enhancement:**
 
 ```
-ls /ho<TAB>
-→ ls /home/
-
-ls /home/user --so<TAB>
-→ ls /home/user --sort
-
-fetch https://api.<TAB>
-→ [history-based URL completions]
+COLORTERM=truecolor or 24bit  →  true colour — full rich rendering
+TERM=xterm-256color            →  256 colour — good rendering
+TERM=xterm or similar          →  16 colour — basic rendering
+NO_COLOR set                   →  no colour — plain text only
+TERM=dumb or no TTY            →  plain text only — CI environments
 ```
+
+`NO_COLOR` is respected unconditionally — no exceptions.
+
+**Tier 1 — must work perfectly:**
+
+| Terminal | Platform |
+|---|---|
+| Ghostty | macOS, Linux |
+| WezTerm | All three |
+| Windows Terminal | Windows |
+| Alacritty | All three |
+| VS Code integrated terminal | All three |
+| IntelliJ integrated terminal | All three |
+| iTerm2 | macOS |
+| GNOME Terminal | Linux |
+| Warp | macOS, Linux |
+| SSH sessions | All three |
+
+**Tier 2 — best effort, community-tested:**
+
+| Terminal | Platform |
+|---|---|
+| Kitty | macOS, Linux |
+| tmux + any Tier 1 terminal | All three |
+| Zellij + any Tier 1 terminal | All three |
+| foot | Linux (Wayland) |
+
+---
+
+### 4. Tab Completion
+
+Context-aware completion — the REPL knows the type expected at each position.
 
 **Completion sources:**
 
-| Context | Completion source |
+| Context | Source |
 |---|---|
-| First token | Built-in commands + plugin commands + functions |
+| First token | Built-in commands + plugin commands + autoloaded functions |
 | `path` parameter | File system — directories and files |
 | `url` parameter | History-based URL completions |
 | `--flag` | Command's declared flag names |
-| Flag value | Flag's declared type — enum variants, booleans etc. |
-| ForgeScript keywords | Language keywords |
+| Flag value | Flag's declared type — enum variants, booleans |
+| Plugin commands | Plugin completion definitions |
 
-Plugin completions are declared in the plugin manifest (RFC-005) and loaded
-at shell startup.
+---
 
-### 4. Fuzzy Path Completion
+### 5. Fuzzy Path Completion
 
-Typo-tolerant path completion — similar to fzf:
+Typo-tolerant path completion:
 
 ```
-ls /hom/us<TAB>
-→ ls /home/user/     # fuzzy matched
-
-cd proj/src<TAB>
-→ cd ~/projects/src/  # expanded and completed
+ls /hom/us<TAB>  →  ls /home/user/
+cd proj/src<TAB> →  cd ~/projects/src/
 ```
 
-### 5. History
+---
 
-Persistent history across sessions — stored in
-`~/.config/forge/history.db` (SQLite):
+### 6. Plugin Completion Loading — Background Eager with Cache
 
-| Feature | Description |
+Plugin completions load in the background after the shell becomes interactive.
+
+**Startup sequence:**
+
+```
+forge starts → shell interactive immediately
+    ↓ background thread
+Plugin completions load asynchronously (~50-100ms)
+    ↓
+Cache written to disk
+```
+
+**Cache location:**
+
+| Platform | Path |
 |---|---|
-| Persistent | Survives shell restarts |
-| Searchable | `Ctrl+R` incremental search |
-| Deduplication | Consecutive duplicates collapsed |
-| Timestamped | Each entry carries timestamp and working directory |
-| Filtered | `--no-history` flag suppresses recording for sensitive commands |
+| Linux | `~/.cache/forge/completions/` |
+| macOS | `~/Library/Caches/forge/completions/` |
+| Windows | `%LOCALAPPDATA%\forge\cache\completions\` |
 
-```forge
-# History search — Ctrl+R
-# Shows most recent matching commands inline as ghost text
+**Cache invalidation:** Plugin version change → refresh. No change → instant load from cache.
+
+**Graceful fallback:**
+
+```
+$ forge-kubectl <TAB>
+  Loading completions... (done in 80ms)
+  pods    services    deployments    namespaces
 ```
 
-### 6. Syntax Highlighting — Live
+---
 
-Live syntax highlighting as the user types — before pressing Enter:
+### 7. History
+
+Persistent history — SQLite backend.
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.local/share/forge/history.db` |
+| macOS | `~/Library/Application Support/forge/history.db` |
+| Windows | `%APPDATA%\forge\history.db` |
+
+Features: persistent across restarts, `Ctrl+R` incremental search,
+consecutive duplicate deduplication, timestamps + working directory per entry,
+`--no-history` flag to suppress recording.
+
+```toml
+[repl]
+history_size = 10000
+```
+
+---
+
+### 8. Syntax Highlighting — Live
 
 | Token | Colour |
 |---|---|
 | Built-in commands | Green |
-| Unknown commands | Red — immediate visual feedback |
+| Unknown commands | Red |
 | `path` literals | Yellow |
 | `str` literals | Cyan |
 | `int` / `float` literals | Magenta |
@@ -145,41 +207,41 @@ Live syntax highlighting as the user types — before pressing Enter:
 | Errors | Red underline |
 | Comments | Grey |
 
-Colours follow the terminal's theme — respects `NO_COLOR` environment
-variable.
+`NO_COLOR` suppresses all highlighting.
 
-### 7. Autosuggestions
+---
 
-Ghost text suggestions based on history — Fish Shell style:
+### 9. Autosuggestions
 
-```
-ls /home/user▌░░░░░░░░░░░░░░░░░░
-             └─ ghost: --show_hidden (from history)
-
-Press → to accept, Ctrl+F to accept word
-```
-
-- Suggestions sourced from command history
-- Most recent matching history entry shown
-- `→` accepts full suggestion
-- `Ctrl+F` accepts next word only
-
-### 8. Inline Error Hints
-
-Type errors and unknown commands shown inline before Enter is pressed:
+Ghost text suggestions from history — Fish Shell style:
 
 ```
+ls /home/user▌░░░░░░░░░░░░░
+             └─ ghost: --show_hidden
+
+→  accept full    Ctrl+F  accept word
+```
+
+---
+
+### 10. Inline Error Hints — Incremental Parser
+
+**Implementation:** `forge-lang/parser` in incremental mode — shared with
+the full pipeline. No separate lightweight parser.
+
+```forge
 ls /home/user --sort 42▌
-                     ^^
-                     error: expected str, found int
+                     ^^ error: expected str, found int
 ```
 
-This requires a lightweight incremental parser running on each keystroke —
-distinct from the full evaluation pipeline.
+- Shared parser with error recovery — produces partial AST from incomplete input
+- Runs in a separate background thread — never blocks keystrokes
+- Debounced — 150ms after last keystroke
+- Precedent: rust-analyzer, TypeScript LS, clangd
 
-### 9. Multi-line Editing
+---
 
-Blocks open naturally at the prompt:
+### 11. Multi-line Editing
 
 ```
 $ for file in ls /home/user {
@@ -187,13 +249,12 @@ $ for file in ls /home/user {
 > }
 ```
 
-- `{` opens a block — prompt continues with `>` until `}` closes it
-- `Escape` cancels multi-line entry
-- Multi-line history entries stored and recalled as a unit
+`{` opens block → `>` prompt → `}` closes. `Escape` cancels. Multi-line
+entries stored and recalled as a unit from history.
 
-### 10. Prompt — `[prompt]` Config
+---
 
-Prompt is configured in RFC-013 `config.toml`:
+### 12. Prompt Config
 
 ```toml
 [prompt]
@@ -202,91 +263,57 @@ segments = ["cwd", "git", "execution_time", "exit_code"]
 style    = "powerline"   # "powerline" | "plain" | "minimal"
 ```
 
-**Built-in prompt segments:**
+**Built-in segments:** `cwd`, `git`, `execution_time`, `exit_code`, `user`, `host`
 
-| Segment | Description |
-|---|---|
-| `cwd` | Current working directory — shortened intelligently |
-| `git` | Git branch + status — clean/dirty/ahead/behind |
-| `execution_time` | Last command duration — shown if > 2s |
-| `exit_code` | Last exit code — shown if non-zero |
-| `user` | Current user |
-| `host` | Hostname |
+Plugin segments — `kubernetes`, `aws_profile`, `node_version` etc. — declared
+in plugin manifests (RFC-005).
 
-**Plugin prompt segments:** `kubernetes`, `aws_profile`, `node_version`,
-`python_env` etc. — declared in plugin manifests.
+---
 
-### 11. Built-in REPL Features — Always On
-
-These features are built-in — not plugins:
-
-```toml
-[repl]
-autosuggestions     = true   # ghost text from history
-syntax_highlighting = true   # live highlighting as you type
-fuzzy_completion    = true   # typo-tolerant path completion
-inline_errors       = true   # type errors before Enter
-```
-
-### 12. Key Bindings — `[keybindings]` Config
+### 13. Key Bindings Config
 
 ```toml
 [keybindings]
-"ctrl+r"     = "history_search"
-"ctrl+a"     = "line_start"
-"ctrl+e"     = "line_end"
-"ctrl+w"     = "delete_word"
-"ctrl+l"     = "clear_screen"
-"ctrl+c"     = "cancel"
-"ctrl+d"     = "exit"
-"→"          = "accept_suggestion"
-"ctrl+f"     = "accept_suggestion_word"
+"ctrl+r" = "history_search"
+"ctrl+a" = "line_start"
+"ctrl+e" = "line_end"
+"ctrl+w" = "delete_word"
+"ctrl+l" = "clear_screen"
+"ctrl+c" = "cancel"
+"ctrl+d" = "exit"
+"→"      = "accept_suggestion"
+"ctrl+f" = "accept_suggestion_word"
 ```
 
-### 13. Output Mode at the REPL
-
-The REPL always knows it's interactive — `OutputMode::RichTerminal` is always
-selected. No TTY detection needed at the prompt.
-
 ---
 
-## Drawbacks
+### 14. Headless REPL Mode
 
-- **Incremental parser for inline errors adds complexity.** A lightweight
-  parser must run on every keystroke — it must be fast enough to feel
-  instantaneous. If it can't keep up, inline errors must be disabled or
-  debounced.
-- **Fuzzy completion can surprise users.** `ls /hom/us` completing to
-  `/home/user` is helpful — but if the fuzzy match is wrong, it's
-  disorienting. A clear visual indicator of fuzzy vs exact match is required.
+For testing REPL behaviour in CI without a real TTY.
 
----
+```bash
+echo "ls /home/user\nexit" | forge repl --headless
+forge repl --headless < test-session.txt
+echo "ls /home/<TAB>\nexit" | forge repl --headless
+```
 
-## Alternatives Considered
-
-### Alternative A — Separate interactive syntax
-
-**Rejected:** Two syntaxes means two mental models. What works at the prompt
-must work in a script — this is a core design principle of ForgeScript.
-
-### Alternative B — POSIX-style readline integration
-
-**Rejected:** readline provides history and basic completion but not
-autosuggestions, syntax highlighting, or inline error hints. A native REPL
-layer gives full control over the interactive experience.
+- `<TAB>` literal triggers tab-completion simulation
+- No ANSI codes — plain text output always
+- Deterministic — suitable for CI assertions
+- Exit code reflects last command result
 
 ---
 
 ## Unresolved Questions
 
-- [ ] Which terminal emulators and colour depths should be officially
-      supported?
-- [ ] Should the incremental parser for inline errors share code with the
-      full parser, or be a separate lightweight implementation?
-- [ ] How are plugin completion definitions loaded at startup — eagerly or
-      lazily?
-- [ ] Should `forge` support a headless REPL mode for testing interactive
-      behaviour?
+All previously unresolved questions have been resolved.
+
+| ID | Question | Resolution |
+|---|---|---|
+| UQ-1 | Terminal support matrix | Progressive enhancement + `NO_COLOR` + 10 Tier 1 terminals |
+| UQ-2 | Incremental parser | Shared parser with error recovery — 150ms debounce |
+| UQ-3 | Plugin completion loading | Background eager + disk cache |
+| UQ-4 | Headless REPL mode | `forge repl --headless` |
 
 ---
 
@@ -296,44 +323,44 @@ layer gives full control over the interactive experience.
 
 | Crate | Responsibility |
 |---|---|
-| `forge-repl` | REPL layer — main interactive shell loop |
+| `forge-repl` | Main interactive shell loop |
 | `forge-repl/completion` | Tab completion engine |
-| `forge-repl/history` | Persistent history — SQLite backend |
+| `forge-repl/history` | SQLite history backend |
 | `forge-repl/highlight` | Live syntax highlighting |
-| `forge-repl/suggest` | Autosuggestion engine |
-| `forge-repl/prompt` | Prompt rendering — segments, themes |
-| `forge-repl/parser` | Incremental parser for inline errors |
+| `forge-repl/suggest` | Ghost text autosuggestions |
+| `forge-repl/prompt` | Prompt rendering |
+| `forge-lang/parser` | Incremental mode for inline errors |
 
 ### Dependencies
 
-- Requires RFC-001 (ForgeScript syntax) — unified syntax at prompt and in scripts
-- Requires RFC-003 (built-in commands) — completion sources
-- Requires RFC-005 (plugin system) — plugin completion manifests
-- Requires RFC-013 (shell config) — `[repl]`, `[prompt]`, `[keybindings]` config
+- RFC-001 (ForgeScript syntax), RFC-003 (built-ins), RFC-005 (plugins), RFC-013 (config)
 
 ### Milestones
 
-1. Implement basic REPL loop — input, parse, execute, output
-2. Implement persistent history — SQLite backend, `Ctrl+R` search
-3. Implement tab completion — built-ins, paths, flags
-4. Implement fuzzy path completion
-5. Implement live syntax highlighting
-6. Implement autosuggestions — Fish-style ghost text
-7. Implement incremental parser for inline error hints
-8. Implement multi-line editing
-9. Implement prompt rendering — built-in segments
-10. Implement plugin completion loading
-11. Integration tests — interactive behaviour on all three platforms
+1. Basic REPL loop — input, parse, execute, output
+2. Persistent history — SQLite, `Ctrl+R`
+3. Tab completion — built-ins, paths, flags
+4. Fuzzy path completion
+5. Live syntax highlighting
+6. Autosuggestions — ghost text
+7. Incremental parser — 150ms debounce, background thread
+8. Inline error hints
+9. Multi-line editing
+10. Prompt rendering — built-in segments
+11. Background plugin completion loading + disk cache
+12. Headless mode — `forge repl --headless`
+13. Integration tests — all three platforms
+14. Headless CI tests
 
 ---
 
 ## References
 
 - [Fish Shell Design](https://fishshell.com/docs/current/design.html)
-- [Nushell REPL](https://github.com/nushell/nushell/tree/main/crates/nu-cli)
 - [reedline — Rust REPL library](https://github.com/nushell/reedline)
-- [fzf — Fuzzy finder](https://github.com/junegunn/fzf)
 - [NO_COLOR standard](https://no-color.org/)
+- [Ghostty terminal](https://ghostty.org/)
+- [WezTerm](https://wezfurlong.org/wezterm/)
 - [RFC-001 — ForgeScript Syntax](./RFC-001-forgescript-syntax.md)
 - [RFC-005 — Plugin System](./RFC-005-plugin-system.md)
 - [RFC-013 — Shell Configuration Model](./RFC-013-shell-config.md)
