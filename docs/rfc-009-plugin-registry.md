@@ -2,10 +2,10 @@
 
 | Field          | Value                        |
 |----------------|------------------------------|
-| Status         | Draft                        |
+| Status         | **In Review**                |
 | Author         | Ajitem Sahasrabuddhe         |
 | Created        | 2026-04-09                   |
-| Last Updated   | 2026-04-09                   |
+| Last Updated   | 2026-04-15                   |
 | Supersedes     | —                            |
 | Superseded By  | —                            |
 
@@ -14,288 +14,482 @@
 ## Summary
 
 This RFC defines the Forge Shell plugin registry — the infrastructure for
-discovering, publishing, installing, and verifying third-party plugins.
-The registry is a static, content-addressed store hosted at
-`plugins.forge-shell.dev`. Plugins are distributed as signed WASM modules
-with verified SHA-256 hashes.
+discovering, publishing, installing, and verifying third-party plugins. The
+registry uses a Go-style decentralised model: no hosted binaries, a static
+index at `plugins.forge-shell.dev`, Sigstore keyless signing via GitHub OIDC,
+and a transparency log at `sum.forge-shell.dev`. Plugin discovery uses a
+locally cached index with background refresh. Publisher namespaces prevent
+typosquatting. This RFC formalises the distribution model established in
+RFC-005.
 
 ---
 
 ## Motivation
 
 The plugin system defined in RFC-005 establishes how plugins work internally.
-This RFC addresses how users discover and install them, and how plugin authors
-publish them. Without a registry, the plugin ecosystem cannot grow beyond
-first-party plugins.
+This RFC addresses how users discover and install them, how plugin authors
+publish them, and how the ecosystem maintains security and trust without
+requiring Forge Shell to host and maintain a centralised registry.
 
 The registry must be:
 - **Simple** — easy to publish to, easy to install from
-- **Secure** — plugins are verified before installation
-- **Decentralised-friendly** — users can host their own registries
+- **Secure** — plugins verified before installation, no long-lived keys to steal
+- **Decentralised-friendly** — no hosted binaries, users can host private registries
+- **Discoverable** — full-text search, categories, tags
 
 ---
 
 ## Design
 
-### 1. Registry Architecture
+### 1. Registry Architecture — Decentralised, Static
 
-The official registry is a **static site** — a set of JSON files served from
-a CDN. There is no dynamic API. This makes it simple to operate, easy to
-mirror, and resistant to downtime.
+The official registry hosts no plugin binaries. It is a static site — a set
+of JSON files served from a CDN. No dynamic API. No server-side compute.
 
-```
-plugins.forge-shell.dev/
-├── index.json                          # full plugin index
-├── plugins/
-│   ├── forge-git/
-│   │   ├── meta.json                   # plugin metadata
-│   │   ├── forge-git-1.0.0.wasm
-│   │   ├── forge-git-1.0.0.wasm.sig   # detached signature
-│   │   ├── forge-git-1.1.0.wasm
-│   │   └── forge-git-1.1.0.wasm.sig
-│   └── forge-kubectl/
-│       └── ...
-└── keys/
-    └── forge-shell.pub                 # Forge Shell's signing public key
-```
+| Component | What it is | Hosting cost |
+|---|---|---|
+| `plugins.forge-shell.dev` | Static discovery index — JSON files | Minimal — CDN |
+| `sum.forge-shell.dev` | Append-only content hash log | Minimal — static |
+| `github.com/forge-shell/plugin-index` | Index source — TOML files, PR-based | Zero |
+| Official plugins (`forge-shell/forge-*`) | GitHub repos — source + releases | Zero |
+
+Forge Shell never hosts plugin binaries. All binaries are fetched directly
+from plugin authors' GitHub release pages or other hosting.
 
 ---
 
-### 2. Index Format
+### 2. Plugin Index Format
+
+The index is a single JSON file at `plugins.forge-shell.dev/index.json`.
 
 ```json
 {
-  "version": "1",
-  "updated": "2026-04-09T10:00:00Z",
+  "version": 1,
+  "generated_at": "2026-04-15T09:00:00Z",
   "plugins": [
     {
-      "name":        "forge-git",
-      "description": "First-class Git integration for Forge Shell",
-      "author":      "forge-shell",
-      "homepage":    "https://github.com/forge-shell/forge-git",
-      "license":     "MIT",
-      "latest":      "1.2.0",
+      "name":           "forge-git",
+      "vanity":         "forge-git",
+      "source":         "github.com/forge-shell/forge-git",
+      "description":    "Git integration for Forge Shell",
+      "category":       "version-control",
+      "tags":           ["git", "github", "version-control"],
+      "official":       true,
+      "verified":       true,
+      "signing_method": "sigstore",
+      "github":         "forge-shell",
+      "latest":         "1.2.0",
       "versions": [
         {
           "version":    "1.2.0",
-          "url":        "https://plugins.forge-shell.dev/plugins/forge-git/forge-git-1.2.0.wasm",
+          "wasm_url":   "https://github.com/forge-shell/forge-git/releases/download/v1.2.0/forge-git.wasm",
           "sha256":     "abc123...",
-          "signature":  "https://plugins.forge-shell.dev/plugins/forge-git/forge-git-1.2.0.wasm.sig",
-          "min_forge":  "0.1.0",
-          "published":  "2026-04-09T09:00:00Z",
+          "rekor_uuid": "uuid-of-rekor-transparency-log-entry",
+          "yanked":     false
+        },
+        {
+          "version":    "1.1.0",
+          "wasm_url":   "https://github.com/forge-shell/forge-git/releases/download/v1.1.0/forge-git.wasm",
+          "sha256":     "def456...",
+          "rekor_uuid": "uuid-of-rekor-transparency-log-entry",
           "yanked":     false
         }
       ]
+    },
+    {
+      "name":           "forge-kubectl",
+      "vanity":         "ajitem/forge-kubectl",
+      "source":         "github.com/ajitem/forge-kubectl",
+      "description":    "Kubernetes and Helm integration",
+      "category":       "orchestration",
+      "tags":           ["kubernetes", "helm", "k8s", "containers"],
+      "official":       false,
+      "verified":       true,
+      "signing_method": "sigstore",
+      "github":         "ajitem-sahasrabuddhe",
+      "latest":         "2.1.0",
+      "versions": [...]
     }
   ]
 }
 ```
 
----
+**Index source — `plugin-index/plugins.toml`:**
 
-### 3. Plugin Installation Flow
-
-```
-forge plugin install forge-git
-    │
-    ├─ fetch index.json from registry
-    │
-    ├─ resolve "forge-git" → latest version → download URL + sha256 + sig URL
-    │
-    ├─ download forge-git-1.2.0.wasm
-    │
-    ├─ verify SHA-256 hash matches index entry
-    │
-    ├─ fetch signature file
-    │
-    ├─ verify signature against forge-shell.pub
-    │
-    ├─ check min_forge compatibility
-    │
-    ├─ extract forge-plugin.toml from WASM module
-    │
-    ├─ display capabilities to user:
-    │     Plugin 'forge-git' v1.2.0 requests:
-    │       exec: ["git"]
-    │       filesystem: ["read"]
-    │     Install? [y/N]
-    │
-    ├─ user confirms
-    │
-    └─ install to ~/.forge/plugins/forge-git/
-```
-
-Capability display and user confirmation are required for all plugin
-installations — including updates. This ensures users are always aware of
-what permissions a plugin holds.
-
----
-
-### 4. Plugin Signing
-
-All plugins in the official registry are signed. Forge Shell verifies
-signatures before installation.
-
-**Signing algorithm:** Ed25519
-
-**Key management:**
-- The `forge-shell` organisation holds the signing key
-- First-party plugins (`forge-git`, `forge-kubectl`) are signed by
-  `forge-shell` directly
-- Third-party plugins are signed by the plugin author's key, which must be
-  registered in the registry
-
-**Signature verification flow:**
-
-```
-1. Download plugin.wasm and plugin.wasm.sig
-2. Fetch the author's registered public key from the registry
-3. Verify: Ed25519.verify(plugin.wasm bytes, sig, author_pubkey)
-4. If verification fails → refuse installation with clear error
+```toml
+[[plugin]]
+name        = "forge-git"
+vanity      = "forge-git"
+source      = "github.com/forge-shell/forge-git"
+description = "Git integration for Forge Shell"
+category    = "version-control"
+tags        = ["git", "github", "version-control"]
+official    = true
+verified    = true
+github      = "forge-shell"
 ```
 
 ---
 
-### 5. Publishing a Plugin
+### 3. Publisher Namespaces
 
-Plugin authors publish via the Forge Shell CLI:
+Publisher namespaces prevent typosquatting and establish identity ownership.
+
+**Registration — PR to `plugin-index/publishers.toml`:**
+
+```toml
+[[publisher]]
+namespace      = "ajitem"
+github         = "ajitem-sahasrabuddhe"
+signing_method = "sigstore"
+verified       = true
+```
+
+**Rules:**
+- Namespace claimed via PR from the author's authenticated GitHub account
+- Once claimed, only that publisher can register `namespace/*` vanity URLs
+- Namespace transfer requires team review — not self-service
+- Squatting policy: inactive namespaces (no plugins, >12 months) can be reclaimed
+
+---
+
+### 4. Signing — Sigstore Keyless
+
+Forge Shell uses Sigstore keyless signing — no long-lived private keys.
+
+**Why Sigstore:**
+- No private keys to steal, rotate, or revoke
+- GitHub OIDC is the trust anchor — same identity used for namespace registration
+- Short-lived certificates (10 minutes) — ephemeral, no key management
+- Rekor transparency log provides public auditability
+- `cosign` GitHub Action makes CI signing zero-configuration
+
+**How it works:**
+
+```
+Author pushes release tag on GitHub
+         ↓
+GitHub Actions workflow runs
+         ↓
+cosign signs forge-kubectl.wasm using GitHub OIDC
+         ↓
+Sigstore issues ephemeral certificate tied to github.com/ajitem-sahasrabuddhe
+         ↓
+Signature + certificate recorded in Rekor transparency log
+         ↓
+Author submits PR to plugin-index with wasm_url, sha256, rekor_uuid
+```
+
+**Verification on install:**
+
+```
+forge plugin install ajitem/forge-kubectl
+         ↓
+Fetch forge-kubectl.wasm from wasm_url
+         ↓
+Verify SHA-256 matches index entry
+         ↓
+Fetch Rekor entry by rekor_uuid
+         ↓
+Verify: signature valid + certificate from Sigstore + OIDC identity matches
+        registered publisher (ajitem-sahasrabuddhe)
+         ↓
+Install to ~/.config/forge/plugins/forge-kubectl/
+```
+
+**Plugin manifest signing in CI:**
+
+```yaml
+# .github/workflows/release.yml
+- name: Sign plugin
+  uses: sigstore/cosign-action@v3
+  with:
+    files: forge-kubectl.wasm
+# cosign uses GitHub OIDC automatically — no keys configured
+```
+
+**Revocation:** GitHub account revocation handled by GitHub. No revocation
+list maintained by Forge Shell. If a publisher's GitHub account is compromised,
+GitHub revokes their OIDC token — new signatures cannot be issued for that
+identity. Existing verified signatures remain valid.
+
+---
+
+### 5. Three-Tier Install Resolution
+
+```
+Tier 1 — Canonical short name (official + verified only)
+  forge-git → plugins.forge-shell.dev → github.com/forge-shell/forge-git
+
+Tier 2 — Publisher namespace (registered publishers)
+  ajitem/forge-kubectl → plugins.forge-shell.dev → github.com/ajitem/forge-kubectl
+
+Tier 3 — Direct source URL (no index needed)
+  github.com/user/plugin@v1.0.0 → fetched directly
+```
 
 ```bash
-# Authenticate with the registry (one-time)
-forge plugin auth
-
-# Publish a new version
-forge plugin publish ./forge-myplugin.wasm
-
-# Publish with explicit manifest
-forge plugin publish ./forge-myplugin.wasm --manifest ./forge-plugin.toml
-
-# Yank a broken version
-forge plugin yank forge-myplugin@1.0.1 --reason "Critical bug in deploy command"
+forge plugin install forge-git                      # Tier 1
+forge plugin install forge-git@v1.2.0              # Tier 1 — pinned
+forge plugin install ajitem/forge-kubectl           # Tier 2
+forge plugin install ajitem/forge-kubectl@v2.0.0   # Tier 2 — pinned
+forge plugin install github.com/user/plugin         # Tier 3
+forge plugin install github.com/user/plugin@v1.0.0 # Tier 3 — pinned
 ```
-
-Publishing flow:
-1. CLI authenticates with the registry API (GitHub OAuth)
-2. CLI uploads the `.wasm` file and `forge-plugin.toml`
-3. Registry validates the manifest, checks WASM module integrity
-4. Registry signs the plugin with the author's registered key
-5. Registry updates `index.json`
 
 ---
 
-### 6. Yanking
-
-A yanked plugin version is still downloadable but is not installed by default:
+### 6. Install Flow
 
 ```bash
-# Installing a yanked version requires explicit acknowledgement
-forge plugin install forge-myplugin@1.0.1
-# Warning: v1.0.1 has been yanked: "Critical bug in deploy command"
+forge plugin install ajitem/forge-kubectl
+```
+
+```
+Resolve: ajitem/forge-kubectl → github.com/ajitem/forge-kubectl v2.1.0
+Fetch:   forge-kubectl.wasm (1.2 MB)
+Verify:  SHA-256 ✅
+Verify:  Sigstore signature ✅ — github.com/ajitem-sahasrabuddhe
+
+Installing: forge-kubectl v2.1.0
+Source:      github.com/ajitem/forge-kubectl
+Verified:    ✅ Reviewed by Forge Shell team
+Capabilities: exec["kubectl", "helm"], filesystem:read, env:read
+Limits:      memory: 64MB (↑ above default 32MB), cpu: 15s (↑ above default 5s)
+             ⚠️  This plugin requests above-default resource limits
+Proceed? [y/N] y
+
+Installed: forge-kubectl v2.1.0
+  → ~/.config/forge/plugins/forge-kubectl/
+```
+
+**Unverified plugin install:**
+
+```
+Installing: community-tool v1.0.0
+Source:      github.com/unknown/community-tool
+Verified:    ❌ Not reviewed by Forge Shell team
+Capabilities: exec["*"], filesystem:read-write, network
+             ⚠️  Broad capabilities — review source before installing
+Proceed? [y/N]
+```
+
+---
+
+### 7. Plugin Discovery — Local Index Search
+
+```bash
+# Search — downloads and caches index on first run
+forge plugin search kubectl
+
+  forge-kubectl           orchestration  ✅ verified  ★ official
+  Kubernetes and Helm integration for Forge Shell
+  forge plugin install forge-kubectl
+
+  ajitem/forge-k8s-tools  orchestration  ✅ verified
+  Extended Kubernetes tooling — kustomize, stern, k9s
+  forge plugin install ajitem/forge-k8s-tools
+
+# Browse by category
+forge plugin search --category orchestration
+
+# Filter by tag
+forge plugin search --tag kubernetes
+
+# Force index refresh
+forge plugin search --refresh kubectl
+```
+
+**Index cache location:**
+
+```
+~/.cache/forge/plugin-index/
+    index.json          # full plugin index
+    index.json.etag     # ETag for conditional HTTP requests
+    index.json.age      # last fetch timestamp
+```
+
+**Cache refresh policy:**
+- Age < 1 hour → search cached index, no network request
+- Age > 1 hour → background refresh, search cached version immediately
+- `--refresh` → force fresh fetch before search
+
+**Search field ranking:**
+
+| Field | Weight |
+|---|---|
+| Name exact match | Highest |
+| Name prefix match | High |
+| Tag exact match | High |
+| Category match | Medium |
+| Description substring | Low |
+
+---
+
+### 8. Fixed Categories
+
+```
+version-control    # git, svn, mercurial
+containers         # docker, podman, containerd
+orchestration      # kubernetes, helm, nomad
+cloud              # aws, gcp, azure, digitalocean
+languages          # node, python, rust, go, java
+databases          # postgres, mysql, redis, mongodb
+networking         # ssh, http, dns, vpn
+security           # signing, secrets, scanning
+productivity       # aliases, completions, prompt themes
+monitoring         # logging, metrics, alerting
+devtools           # linting, formatting, testing
+```
+
+Each plugin declares exactly one category. Free-form tags supplement for
+more specific discovery.
+
+---
+
+### 9. Yanking
+
+A yanked version is not installed by default but remains downloadable.
+
+```bash
+# Yank via PR to plugin-index
+# plugin-index maintainers can also yank for security reasons
+
+# Installing a yanked version requires acknowledgement
+forge plugin install ajitem/forge-kubectl@2.0.0
+# Warning: v2.0.0 has been yanked: "Critical security vulnerability"
 # Install anyway? [y/N]
 ```
 
-Yanking is not deletion. Existing installations are not affected. Users who
-have already installed the yanked version see a warning on next update check.
+Yanking is not deletion:
+- Existing installations unaffected — warning shown on `forge plugin list`
+- New installs require explicit confirmation
+- Yank reason always displayed
 
 ---
 
-### 7. Alternative / Private Registries
+### 10. Plugin Lifecycle Commands
 
-Users can configure alternative registries in `~/.forge/config.fgs`:
+```bash
+# Discovery
+forge plugin search kubectl
+forge plugin search --category orchestration
+forge plugin search --tag kubernetes
+forge plugin search --refresh docker
 
-```forge
-[registries]
+# Installation
+forge plugin install forge-git
+forge plugin install forge-git@v1.2.0
+forge plugin install ajitem/forge-kubectl
+forge plugin install github.com/user/plugin@v1.0.0
+
+# Management
+forge plugin list                    # list installed plugins
+forge plugin info forge-git          # show manifest + capabilities
+forge plugin update forge-git        # update to latest
+forge plugin update --all            # update all installed plugins
+forge plugin remove forge-git        # remove plugin
+forge plugin check                   # check for updates + deprecated ABIs
+
+# Index management
+forge plugin index refresh           # force index refresh
+forge plugin index stats             # show index cache info
+```
+
+---
+
+### 11. Private Registries
+
+Private registries follow the same static JSON index format as the official
+registry. Forge Shell ships `forge registry serve` to host a local registry
+from a directory.
+
+**Configuration in `config.toml`:**
+
+```toml
+[plugins.registries]
 default  = "https://plugins.forge-shell.dev"
 internal = "https://plugins.mycompany.internal"
 ```
 
 ```bash
-# Install from alternative registry
+# Install from private registry
 forge plugin install mycompany-tools --registry internal
 
-# Install from direct URL (bypasses registry, still verifies hash)
+# Install from direct URL — bypasses registry, still verifies SHA-256
 forge plugin install https://releases.mycompany.com/forge-tools-1.0.0.wasm \
   --sha256 abc123...
 ```
 
-Private registries follow the same static JSON format as the official registry.
-Forge Shell ships with a `forge registry serve` command to host a local
-registry from a directory.
-
----
-
-### 8. Update Checking
-
-Forge Shell checks for plugin updates in the background (opt-in):
-
-```toml
-[updates]
-check_interval_hours = 24
-auto_update          = false   # never auto-update without user confirmation
-notify               = true    # show notification when updates are available
-```
+**Host a private registry:**
 
 ```bash
-# Check for updates manually
-forge plugin update --check
-
-# Update a specific plugin
-forge plugin update forge-git
-
-# Update all plugins
-forge plugin update --all
+forge registry serve --dir ./my-plugins --port 8080
 ```
+
+Private registries do not need Sigstore signing — SHA-256 verification is
+always performed. For private use, content integrity is the primary concern.
 
 ---
 
 ## Drawbacks
 
-- **Static registry is simple but limited** — search, filtering, and
-  dependency resolution require additional infrastructure if the registry
-  grows large.
-- **Capability confirmation UX** — showing capabilities on every install is
-  correct but adds friction for power users. There is no way to pre-approve
-  known capability sets.
-- **Signing infrastructure overhead** — managing Ed25519 keys, rotation, and
-  revocation requires ongoing operational attention.
-- **No dependency resolution** — plugins cannot declare dependencies on other
-  plugins. If needed, this is a significant future complexity.
+- **Sigstore dependency.** Forge Shell's verification depends on Sigstore's
+  Rekor infrastructure. If Rekor is unavailable, verification of new plugin
+  installs is degraded. Mitigation: SHA-256 verification always runs
+  independently — content integrity is never compromised.
+- **PR-based publishing is slow.** Submitting a PR and waiting for merge is
+  slower than `cargo publish`. Acceptable for v1 — the ecosystem is small
+  enough that manual review adds value. A future automated publishing pipeline
+  can be added when volume demands it.
+- **Static index has no real-time updates.** The index is regenerated from
+  `plugin-index` on merge — not instantly. A plugin published at 09:00 may
+  not appear in search until the next index regeneration. Acceptable given
+  the background refresh model.
 
 ---
 
 ## Alternatives Considered
 
-### Alternative A — Dynamic API Registry (like crates.io)
+### Alternative A — Centralised Registry (crates.io style)
 
-**Approach:** A full API backend with a database, search, and dynamic responses.
-**Rejected because:** Significantly more infrastructure to operate and maintain.
-The static approach works well for npm, Homebrew Formulae, and Cargo's index.
-It can always be upgraded later.
+**Rejected:** Hosting, maintaining, and securing a global registry is
+expensive and operationally complex. crates.io outages have broken the Rust
+ecosystem. A static index with no hosted binaries is simpler and more resilient.
 
-### Alternative B — GitHub Releases as the Registry
+### Alternative B — Long-lived Ed25519 Author Keys
 
-**Approach:** Plugins are distributed via GitHub Releases. `forge plugin install`
-fetches from GitHub.
-**Rejected because:** Couples the registry to GitHub. Breaks for private plugins,
-on-premise deployments, and users in regions where GitHub is restricted.
+**Rejected:** Long-lived keys must be managed, rotated, and revoked.
+Sigstore keyless signing eliminates this entirely — no keys to steal, no
+revocation infrastructure to build. The industry is converging on keyless
+signing for software supply chain security.
 
-### Alternative C — No Official Registry
+### Alternative C — Remote Search API
 
-**Approach:** Users install plugins by URL only. No central discovery.
-**Rejected because:** Discoverability is essential for ecosystem growth. A
-shell without a plugin registry is a shell with no plugins in practice.
+**Rejected:** Contradicts the static site model. Requires server-side compute.
+Breaks offline use. The plugin index will remain small enough for local search
+for the foreseeable future.
+
+### Alternative D — Free-form Tags Only (no categories)
+
+**Rejected:** Free-form tags from many authors become inconsistent. `git`,
+`Git`, `github`, `version-control` all mean the same thing — fixed categories
+provide consistent browse structure. Tags supplement for specifics.
 
 ---
 
 ## Unresolved Questions
 
-- [ ] How are author keys registered and revoked?
-- [ ] Should the registry support plugin categories or tags for discovery?
-- [ ] What is the governance model for the official registry? Who reviews
-      submissions?
-- [ ] Should there be a `forge plugin search` command for full-text search?
-- [ ] How are plugin name conflicts resolved? (first-come-first-served? namespaced?)
-- [ ] Should plugins be namespaced (e.g. `forge-shell/forge-git` vs `forge-git`)?
+All previously unresolved questions have been resolved.
+
+| ID | Question | Resolution |
+|---|---|---|
+| UQ-1 | Author key registration and revocation | Sigstore keyless — GitHub OIDC, no long-lived keys |
+| UQ-2 | Categories and tags | Fixed categories + free-form tags |
+| UQ-3 | Governance model | PR-based submissions — resolved in RFC-005 |
+| UQ-4 | Full-text search | Local cached index — background refresh |
+| UQ-5 | Name conflict resolution | Namespace ownership — resolved in RFC-005 |
+| UQ-6 | Plugin namespacing | Three-tier system — resolved in RFC-005 |
 
 ---
 
@@ -303,34 +497,47 @@ shell without a plugin registry is a shell with no plugins in practice.
 
 ### Affected Crates
 
-- `forge-plugin` — registry client, installation, verification, update checking
-- `forge-cli` — `forge plugin install/publish/update/yank/auth/list/remove` subcommands
-- New: `forge-registry` — static registry server (for self-hosted registries)
+| Crate | Responsibility |
+|---|---|
+| `forge-plugin/index` | Index fetch, cache, search — local full-text search engine |
+| `forge-plugin/install` | Three-tier resolution, download, SHA-256, Sigstore verification |
+| `forge-plugin/registry` | Private registry client, `forge registry serve` |
+| `forge-cli/plugin` | All `forge plugin` subcommands |
+
+**External dependencies:**
+- `cosign` / Sigstore Rust client — for signature verification
+- `rekor-rs` — Rekor transparency log client
 
 ### Dependencies
 
-- Requires RFC-005 (Plugin System) — this RFC extends the plugin system
-  with distribution infrastructure
+- Requires RFC-005 (plugin system) — install flow, capability display, manifest format
+- Requires RFC-013 (shell config) — `[plugins.registries]` config section
 
 ### Milestones
 
-1. Define registry index JSON schema
-2. Implement registry client — fetch index, resolve versions
-3. Implement SHA-256 verification
-4. Implement Ed25519 signature verification
-5. Implement capability display and confirmation on install
-6. Implement `forge plugin install/list/remove/update` commands
-7. Build the official registry static site
-8. Implement `forge plugin publish/yank/auth` commands
-9. Implement alternative registry configuration
-10. Implement `forge registry serve` for self-hosted registries
+1. Define index JSON schema — `plugins.forge-shell.dev/index.json`
+2. Implement index fetch and local cache — ETag, age-based refresh
+3. Implement local search — full-text, category filter, tag filter
+4. Implement three-tier install resolution — Tier 1, 2, 3
+5. Implement SHA-256 verification — all installs
+6. Implement Sigstore signature verification — verified/official plugins
+7. Implement capability display and confirmation on install
+8. Implement yanking — install warning, explicit confirmation
+9. Implement `forge plugin` subcommands — search, install, list, info, update, remove, check
+10. Implement private registry support — config + `forge registry serve`
+11. Build `plugins.forge-shell.dev` static site — index generation from `plugin-index` TOML
+12. Build `sum.forge-shell.dev` — content hash transparency log
+13. Integration tests on ubuntu-latest, macos-latest, windows-latest
 
 ---
 
 ## References
 
-- [Cargo Registry Protocol](https://doc.rust-lang.org/cargo/reference/registry-index.html)
-- [Homebrew Formula Repository](https://github.com/Homebrew/homebrew-core)
-- [Ed25519 — IETF RFC 8032](https://tools.ietf.org/html/rfc8032)
-- [npm Registry API](https://github.com/npm/registry/blob/main/docs/REGISTRY.md)
-- [sigstore — Software Supply Chain Security](https://www.sigstore.dev)
+- [Sigstore — Software Supply Chain Security](https://www.sigstore.dev/)
+- [Rekor — Transparency Log](https://github.com/sigstore/rekor)
+- [cosign — Container Signing](https://github.com/sigstore/cosign)
+- [Go module proxy protocol](https://go.dev/ref/mod#goproxy-protocol)
+- [sum.golang.org — Go transparency log](https://sum.golang.org/)
+- [Cargo registry index format](https://doc.rust-lang.org/cargo/reference/registry-index.html)
+- [RFC-005 — Plugin System](./RFC-005-plugin-system.md)
+- [RFC-013 — Shell Configuration Model](./RFC-013-shell-config.md)
