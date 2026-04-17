@@ -117,8 +117,8 @@ mod tests {
 
     #[test]
     fn test_float_token_roundtrip() {
-        let token = SpannedToken::new(TokenKind::Float(3.14), make_span());
-        assert_eq!(token.kind, TokenKind::Float(3.14));
+        let token = SpannedToken::new(TokenKind::Float(std::f64::consts::PI), make_span());
+        assert_eq!(token.kind, TokenKind::Float(std::f64::consts::PI));
     }
 
     #[test]
