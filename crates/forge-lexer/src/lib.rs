@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_float() {
-        assert_eq!(tokenise("3.14"), vec![TokenKind::Float(3.14)]);
+        assert_eq!(tokenise("2.56"), vec![TokenKind::Float(2.56)]);
     }
 
     #[test]
