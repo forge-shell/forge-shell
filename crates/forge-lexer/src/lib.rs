@@ -101,7 +101,12 @@ mod tests {
     use super::*;
 
     fn make_span() -> Span {
-        Span { start: 0, end: 10, line: 1, col: 1 }
+        Span {
+            start: 0,
+            end: 10,
+            line: 1,
+            col: 1,
+        }
     }
 
     #[test]
@@ -118,10 +123,7 @@ mod tests {
 
     #[test]
     fn test_string_token_roundtrip() {
-        let token = SpannedToken::new(
-            TokenKind::StringLit("hello".to_string()),
-            make_span(),
-        );
+        let token = SpannedToken::new(TokenKind::StringLit("hello".to_string()), make_span());
         assert_eq!(token.kind, TokenKind::StringLit("hello".to_string()));
     }
 
@@ -171,7 +173,12 @@ mod tests {
 
     #[test]
     fn test_span_fields() {
-        let span = Span { start: 5, end: 10, line: 3, col: 7 };
+        let span = Span {
+            start: 5,
+            end: 10,
+            line: 3,
+            col: 7,
+        };
         assert_eq!(span.start, 5);
         assert_eq!(span.end, 10);
         assert_eq!(span.line, 3);
