@@ -1,18 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    ".",
-    "crates/forge-lexer",
-    "crates/forge-ast",
-    "crates/forge-parser",
-    "crates/forge-hir",
-    "crates/forge-lower",
-    "crates/forge-exec",
-    "crates/forge-builtins",
-    "crates/forge-repl",
-    "crates/forge-plugin",
-    "crates/forge-agent",
-]
+members = [".", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-builtins", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
 
 [workspace.dependencies]
 thiserror = "2"
