@@ -10,6 +10,7 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
 
 [package]
 name = "forge"
@@ -24,3 +25,6 @@ path = "src/main.rs"
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+cargo-husky.workspace = true
