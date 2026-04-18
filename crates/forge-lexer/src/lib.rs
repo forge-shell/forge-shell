@@ -90,6 +90,13 @@ pub enum TokenKind {
     Eof,
 
     // --- Shebang directive ---
+    /// A line beginning with `#!`. The inner string is the full content
+    /// after `#!`, trimmed of leading and trailing whitespace.
+    ///
+    /// Examples:
+    ///   `#!/usr/bin/env forge`          →  `ShebangDirective("/usr/bin/env forge")`
+    ///   `#!forge:overflow = "saturate"` →  `ShebangDirective("forge:overflow = \"saturate\"")`
+    ///   `#!forge:strict = true`         →  `ShebangDirective("forge:strict = true")`
     ShebangDirective(String),
 }
 
@@ -477,5 +484,79 @@ mod tests {
             result,
             Err(LexError::UnterminatedInterpolation { .. })
         ));
+    }
+
+    // --- ShebangDirective ---
+
+    #[test]
+    fn test_unix_shebang() {
+        assert_eq!(
+            tokenise("#!/usr/bin/env forge"),
+            vec![TokenKind::ShebangDirective(
+                "/usr/bin/env forge".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn test_forge_directive() {
+        assert_eq!(
+            tokenise(r#"#!forge:overflow = "saturate""#),
+            vec![TokenKind::ShebangDirective(
+                r#"forge:overflow = "saturate""#.to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn test_directive_followed_by_code() {
+        assert_eq!(
+            tokenise("#!/usr/bin/env forge\nlet x = 1"),
+            vec![
+                TokenKind::ShebangDirective("/usr/bin/env forge".to_string()),
+                TokenKind::Newline,
+                TokenKind::Let,
+                TokenKind::Ident("x".to_string()),
+                TokenKind::Assign,
+                TokenKind::Integer(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_multiple_directives() {
+        let tokens = tokenise("#!/usr/bin/env forge\n#!forge:strict = true\nlet x = 1");
+        assert_eq!(
+            tokens[0],
+            TokenKind::ShebangDirective("/usr/bin/env forge".to_string())
+        );
+        assert_eq!(
+            tokens[2],
+            TokenKind::ShebangDirective("forge:strict = true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_directive_content_is_trimmed() {
+        assert_eq!(
+            tokenise("#!forge:strict = true   "),
+            vec![TokenKind::ShebangDirective(
+                "forge:strict = true".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn test_regular_comment_still_skipped() {
+        assert_eq!(
+            tokenise("# regular comment\nlet x = 1"),
+            vec![
+                TokenKind::Newline,
+                TokenKind::Let,
+                TokenKind::Ident("x".to_string()),
+                TokenKind::Assign,
+                TokenKind::Integer(1),
+            ]
+        );
     }
 }
