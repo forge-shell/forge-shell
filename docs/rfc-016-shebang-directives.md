@@ -1,4 +1,4 @@
-# RFC-016 — Shebang Directives
+# RFC-016 — Script Directives
 
 | Field         | Value                |
 |---------------|----------------------|
@@ -13,66 +13,97 @@
 
 ## Summary
 
-ForgeScript files may begin with `#!` lines that serve two distinct purposes:
-Unix shebangs (`#!/usr/bin/env forge`) for direct script execution, and
-ForgeScript directives (`#!abi:stable`) for per-file pipeline configuration.
-This RFC defines the syntax, permitted directive keys, lexer representation,
-parser handling, and execution semantics for both forms.
+ForgeScript files may begin with a Unix shebang (`#!/usr/bin/env forge`) for
+direct execution, followed by zero or more ForgeScript directives
+(`#!forge:key = "value"`) that configure per-file runtime behaviour. This RFC
+defines the complete directive syntax, the v1 directive set, lexer and parser
+representation, runtime enforcement semantics, and the reserved namespace for
+future directives. It supersedes and replaces the informal directive
+description in RFC-001 §2.
 
 ---
 
 ## Motivation
 
-During implementation of the `forge-lexer` crate, a design question emerged:
-`#!` lines were initially treated as comments and discarded. This works for
-Unix shebangs but silently swallows any structured directives the pipeline
-needs to act on — for example, ABI stability declarations and plugin
-configuration.
+During implementation of `forge-lexer` (Issue #8), the `#!` line handling
+surfaced as an unspecified design area. RFC-001 §2 listed a partial directive
+set without defining enforcement semantics, the lexer representation, or the
+boundary between script directives and plugin manifest concerns. This RFC
+closes that gap with a complete, implementable specification.
 
-Without a formal specification, each pipeline stage would need ad-hoc
-handling. This RFC defines the contract once so every stage — lexer, parser,
-platform backend, executor — knows exactly what to expect.
+Key decisions resolved here:
+
+- Script directives use `#!forge:key = "value"` — namespaced to avoid
+  conflicts with Unix shebangs and future tooling.
+- ABI versioning belongs in `forge-plugin.toml`, not in script directives.
+- Plugin entry point declaration belongs in `forge-plugin.toml`, not in
+  script directives.
+- `version` as a script metadata field is dropped — git tags are the source
+  of truth for versioning.
+- `sandbox` is deferred — cross-platform enforcement is not achievable in v1.
 
 ---
 
 ## Design
 
-### Lexer Representation
+### 1. Syntax
 
-The lexer emits `#!` lines as a dedicated token variant rather than
-discarding them as comments:
+```
+file         ::= [shebang_line] {directive_line} {statement}
+shebang_line ::= "#!/" <anything> <newline>        -- line 1 only
+directive_line::= "#!forge:" key " = " value <newline>
+key          ::= [a-z][a-z0-9-]*
+value        ::= quoted_string | unquoted_value
+quoted_string::= '"' <utf8 chars excluding newline> '"'
+unquoted_value::= <non-whitespace chars excluding newline>
+```
+
+**Rules:**
+- The Unix shebang (`#!/...`) must be on line 1 if present. It is the only
+  `#!` form that does not start with `#!forge:`.
+- `#!forge:` directives must appear before any statements. A directive after
+  a statement is a parse error.
+- Unknown `#!forge:` keys produce a compile-time warning and are otherwise
+  ignored — forward compatibility.
+- Any `#!` line that is neither a Unix shebang nor a `#!forge:` directive
+  is a compile-time warning and is ignored.
+
+### 2. Example
+
+```forge
+#!/usr/bin/env forge
+#!forge:description = "Deploy script for the production environment"
+#!forge:author      = "Ajitem Sahasrabuddhe"
+#!forge:min-version = "0.3.0"
+#!forge:platform    = "unix"
+#!forge:overflow    = "saturate"
+#!forge:strict      = true
+#!forge:timeout     = "5m"
+#!forge:require-env = "DATABASE_URL,API_KEY"
+
+# Script body begins here
+let target = $TARGET_ENV
+```
+
+### 3. Lexer Representation
+
+The lexer emits `#!` lines as a dedicated token variant:
 
 ```rust
-/// A shebang or directive line starting with `#!`.
-/// The inner string is the content after `#!`, trimmed of whitespace.
+/// A line beginning with `#!`. The inner string is the full content
+/// after `#!`, trimmed of leading and trailing whitespace.
 ///
 /// Examples:
-///   `#!/usr/bin/env forge`  →  ShebangDirective("/usr/bin/env forge")
-///   `#!abi:stable`          →  ShebangDirective("abi:stable")
+///   `#!/usr/bin/env forge`     →  ShebangDirective("/usr/bin/env forge")
+///   `#!forge:overflow = "saturate"` →  ShebangDirective("forge:overflow = \"saturate\"")
 ShebangDirective(String),
 ```
 
-`#!` lines may appear **anywhere in a file**, not only on line 1. The lexer
-produces `ShebangDirective` tokens wherever it encounters them. The parser
-enforces positional constraints (see below).
+The lexer does not parse the directive structure — it emits the raw content.
+Structural parsing (key/value splitting, validation) is the parser's
+responsibility.
 
-### Syntax
-
-```
-shebang_line ::= "#!" <content> <newline>
-content      ::= unix_shebang | directive
-unix_shebang ::= "/" <anything>          # starts with '/'
-directive    ::= <key> ":" <value>
-key          ::= [a-z][a-z0-9_-]*
-value        ::= <anything except newline>
-```
-
-### Parser Handling
-
-The parser collects all leading `ShebangDirective` tokens into a
-`Vec<Directive>` on the `Program` node before any statements are parsed.
-Directives after the first statement are a **parse error** —
-`ParseError::DirectiveAfterStatement`.
+### 4. Parser Representation
 
 ```rust
 pub struct Program {
@@ -86,133 +117,213 @@ pub struct Directive {
 }
 
 pub enum DirectiveKind {
-    /// `#!/path/to/interpreter` — Unix shebang, ignored at runtime on all platforms
+    /// `#!/path/to/interpreter` — Unix shebang.
+    /// Ignored by the executor on all platforms.
     UnixShebang(String),
-    /// `#!abi:stable` / `#!abi:unstable`
-    Abi(AbiStability),
-    /// `#!plugin:<name>` — declares this file is a plugin entry point
-    Plugin(String),
-    /// An unrecognised directive — preserved for forward compatibility
+
+    /// `#!forge:description = "..."` — human-readable script description.
+    Description(String),
+
+    /// `#!forge:author = "..."` — script author.
+    Author(String),
+
+    /// `#!forge:min-version = "1.2.0"` — minimum Forge Shell version required.
+    MinVersion(semver::Version),
+
+    /// `#!forge:platform = "unix"` — supported platforms.
+    Platform(Vec<Platform>),
+
+    /// `#!forge:overflow = "saturate"` — integer overflow behaviour.
+    Overflow(OverflowMode),
+
+    /// `#!forge:strict = true` — fail on first error.
+    Strict(bool),
+
+    /// `#!forge:timeout = "30s"` — maximum wall-clock execution time.
+    Timeout(Duration),
+
+    /// `#!forge:jobs = "4"` — maximum parallel jobs.
+    Jobs(JobLimit),
+
+    /// `#!forge:env-file = ".env"` — env file to load before execution.
+    EnvFile(String),
+
+    /// `#!forge:require-env = "VAR1,VAR2"` — required environment variables.
+    RequireEnv(Vec<String>),
+
+    /// `#!forge:override = "ls"` — built-in command this script overrides.
+    Override(String),
+
+    /// An unrecognised `#!forge:` directive — preserved for diagnostics.
+    /// Produces a compile-time warning. Does not affect execution.
     Unknown { key: String, value: String },
 }
 
-pub enum AbiStability {
-    Stable,
-    Unstable,
+pub enum Platform {
+    All,
+    Unix,    // Linux + macOS
+    Linux,
+    MacOs,
+    Windows,
+}
+
+pub enum OverflowMode {
+    Panic,
+    Saturate,
+    Wrap,
+}
+
+pub enum JobLimit {
+    Count(u32),
+    Auto,  // number of logical CPU cores
 }
 ```
 
-### Directive Reference
+### 5. v1 Directive Reference
 
-| Directive | Example | Meaning |
-|---|---|---|
-| Unix shebang | `#!/usr/bin/env forge` | Direct execution on Unix. Ignored on Windows. |
-| `abi` | `#!abi:stable` | Declares the script's public API follows stable ABI rules. Enforced by RFC-014 versioning policy. |
-| `abi` | `#!abi:unstable` | Explicitly opts out of ABI stability guarantees. |
-| `plugin` | `#!plugin:my-plugin` | Marks file as a WASM plugin entry point. Consumed by `forge-plugin`. |
+| Directive | Type | Default | Runtime enforcement |
+|---|---|---|---|
+| `description` | string | — | Metadata only — displayed by `forge script info` |
+| `author` | string | — | Metadata only |
+| `min-version` | semver | — | Hard error if Forge runtime is older |
+| `platform` | `all` \| `unix` \| `linux` \| `macos` \| `windows` | `all` | Hard error if current platform not in list |
+| `overflow` | `panic` \| `saturate` \| `wrap` | `panic` | Enforced by executor for all integer operations |
+| `strict` | `true` \| `false` | `false` | Executor terminates on first non-zero exit code |
+| `timeout` | duration (`30s`, `5m`, `1h`) | — | Executor kills script after elapsed wall time |
+| `jobs` | integer \| `auto` | `auto` | Executor caps concurrent job spawns |
+| `env-file` | path string | — | Loaded and merged into env before first statement |
+| `require-env` | comma-separated names | — | Hard error before first statement if any var is unset |
+| `override` | built-in command name | — | Resolver substitutes this script for the named built-in |
 
-### Execution Semantics
+### 6. Runtime Enforcement Detail
 
-- **`UnixShebang`** — silently ignored by the executor on all platforms.
-  Present only for OS-level direct execution support.
-- **`Abi(Stable)`** — the executor and plugin host enforce that no
-  unstable APIs are called. Produces `ExecError::UnstableApiInStableScript`
-  if violated.
-- **`Abi(Unstable)`** — no enforcement. Default if `#!abi` is absent.
-- **`Plugin`** — consumed by `forge-plugin` during plugin loading. The
-  executor treats the file as a plugin entry point rather than a script.
-- **`Unknown`** — emitted as a `tracing::warn!` at runtime, then ignored.
-  This preserves forward compatibility — a script written for a future
-  version of Forge runs without error on an older version.
-
-### Windows Behaviour
-
-On Windows, `#!/usr/bin/env forge` has no OS-level effect — Windows does
-not use shebangs for execution. The lexer and parser handle the token
-identically on all platforms. The executor ignores `UnixShebang` on all
-platforms. No special-casing is required anywhere in the pipeline.
-
-### Example Scripts
-
-**Direct Unix execution:**
+**`min-version`**
 ```
-#!/usr/bin/env forge
-let x = 42
-echo x
+forge run script.fgs
+Error: script requires Forge Shell >= 0.3.0, but this is 0.2.1
+       Update with: forge self-update
 ```
 
-**Stable ABI script (importable as a library):**
+**`platform`**
 ```
-#!abi:stable
-
-pub fn greet(name: str) -> str {
-    "Hello, {name}!"
-}
+forge run script.fgs   # on Windows
+Error: script declares platform = "unix" and cannot run on windows
 ```
 
-**Plugin entry point:**
+**`require-env`**
 ```
-#!plugin:my-tool
-#!abi:stable
+forge run deploy.fgs
+Error: required environment variable DATABASE_URL is not set
+       required environment variable API_KEY is not set
+       Declared by: #!forge:require-env
+```
 
-pub fn run(args: list<str>) -> str {
-    # plugin implementation
-}
-```
+**`strict`**
+When `strict = true`, any command that exits with a non-zero status
+immediately terminates the script. Equivalent to `set -e` in bash.
+
+**`timeout`**
+The executor starts a timer at the first statement. If wall time exceeds the
+declared timeout, the process group is killed and the script exits with
+`ExecError::Timeout`.
+
+**`env-file`**
+Loaded using the same semantics as RFC-004's `.env` loading. Variables
+already in the environment are not overwritten — the file provides defaults
+only.
+
+**`override`**
+The built-in resolver checks for an `override` directive before dispatching.
+A script declaring `#!forge:override = "ls"` shadows the built-in `ls` for
+the duration of the session when the script is on `$PATH`.
+
+### 7. Reserved Namespace
+
+The following keys are reserved for future RFCs and must not be used by
+plugins or tooling for other purposes:
+
+| Key | Reserved for |
+|---|---|
+| `agent` | RFC-007 — AI agent layer directives |
+| `sandbox` | Future RFC — sandboxed execution model |
+| `abi` | Not used in scripts — belongs in `forge-plugin.toml` |
+| `plugin` | Not used in scripts — belongs in `forge-plugin.toml` |
+
+### 8. What Does Not Belong in Script Directives
+
+These concerns are explicitly out of scope for `#!forge:` directives:
+
+**ABI versioning** — plugin ABI is declared in `forge-plugin.toml` under the
+`[plugin] abi` field. Scripts are not plugins and do not have an ABI.
+
+**Plugin entry point** — declared in `forge-plugin.toml` under
+`[plugin] entrypoint`. The `#!plugin:` directive form is not used.
+
+**Script version** — versioned via git tags. A version number in the file
+creates two sources of truth that will inevitably drift.
 
 ---
 
 ## Drawbacks
 
-- Adds a new token variant and AST node type before the parser is fully
-  implemented, increasing scope of Issue #8 and #11 slightly.
-- `Unknown` directive forward-compatibility means malformed directives
-  (`#!typo:value`) are silently warned rather than hard errors. A strict
-  mode flag could be added later but is out of scope here.
+- `#!forge:` prefix adds verbosity compared to a simpler `#!key = value`
+  form. The namespace is necessary to avoid conflicts with other tools that
+  parse `#!` lines (e.g. GitHub's Linguist).
+- Directives must precede all statements, which means a developer cannot
+  conditionally set overflow mode mid-script. This is intentional — directives
+  are static metadata, not runtime configuration.
 
 ---
 
 ## Alternatives Considered
 
-### Alternative A — Treat all `#!` as comments (discard)
+### Alternative A — Frontmatter block (YAML/TOML header)
 
-**Approach:** The lexer skips `#!` lines entirely, same as `#` comments.
+```forge
+---
+description: Deploy script
+min-version: 0.3.0
+---
+let x = 42
+```
 
-**Rejected because:** Directives like `#!abi:stable` are never seen by the
-pipeline. There is no way to attach per-file metadata without a separate
-mechanism.
+**Rejected because:** Requires a separate parser for the frontmatter format,
+adds visual noise, and is unfamiliar in a shell context. `#!forge:` lines are
+parseable by the existing lexer with minimal additions.
 
-### Alternative B — Separate directive syntax (not `#!`)
+### Alternative B — No namespace (`#!key = value`)
 
-**Approach:** Use a different syntax for directives, e.g. `@directive abi:stable`
-or a frontmatter block.
+```forge
+#!min-version = "0.3.0"
+```
 
-**Rejected because:** `#!` is the established Unix convention. Reusing it
-for both shebangs and directives keeps the syntax minimal and familiar.
-Frontmatter blocks (YAML/TOML headers) add parsing complexity with no
-benefit.
+**Rejected because:** Collides with Unix shebangs (`#!/usr/bin/env forge`
+starts with `#!/`) and creates ambiguity for tools that inspect `#!` lines.
+The `forge:` namespace makes ForgeScript directives unambiguous.
 
-### Alternative C — Only allow directives on line 1
+### Alternative C — `version` as a script metadata field
 
-**Approach:** The lexer only produces `ShebangDirective` for line 1.
+**Rejected because:** Git tags are the source of truth for versioning.
+Embedding a version in the script file creates two sources of truth. When
+they diverge — and they will — the result is confusion, not clarity.
 
-**Rejected because:** A file may have both a Unix shebang on line 1 and
-`#!abi:stable` on line 2. Restricting to line 1 forces a choice between
-the two. The parser's "directives must precede statements" rule is
-sufficient constraint without artificially limiting line numbers.
+### Alternative D — `sandbox` directive for restricting script capabilities
+
+**Rejected because:** Cross-platform sandbox enforcement requires three
+different OS mechanisms (seccomp+namespaces on Linux, Sandbox.framework on
+macOS, AppContainer on Windows). No consistent behaviour is achievable in v1.
+Deferred to a future RFC.
 
 ---
 
 ## Unresolved Questions
 
-- [ ] **UQ-1:** Should `Unknown` directives be a hard error under a
-  `--strict` flag, or always a warning? Deferred — `--strict` mode is not
-  yet defined.
-- [ ] **UQ-2:** Should `#!abi:stable` be enforceable at import time (i.e.
-  the importer can assert the imported module is stable)? Depends on the
-  module system design in RFC-001.
-- [ ] **UQ-3:** Are there additional directive keys needed for the AI agent
-  layer (RFC-007)? To be revisited when RFC-007 implementation begins.
+- **UQ-1 — RESOLVED:** Unknown directives are always a warning, never a hard
+  error. No `--strict` flag for directive validation.
+- **UQ-2 — RESOLVED:** ABI versioning belongs in `forge-plugin.toml`, not in
+  script directives. `#!abi:` is not a valid directive form.
+- **UQ-3 — RESOLVED:** `agent` key reserved in the directive namespace.
+  Formal definition deferred to RFC-007.
 
 ---
 
@@ -220,35 +331,36 @@ sufficient constraint without artificially limiting line numbers.
 
 ### Affected Crates
 
-- `forge-lexer` — add `ShebangDirective(String)` to `TokenKind`
-- `forge-ast` — add `Directive`, `DirectiveKind`, `AbiStability`; add
-  `directives: Vec<Directive>` to `Program`
-- `forge-parser` — collect leading directives before parsing statements;
-  add `ParseError::DirectiveAfterStatement`
-- `forge-exec` — enforce `Abi(Stable)` constraint; ignore `UnixShebang`
-- `forge-plugin` — consume `Plugin` directive during plugin loading
+- `forge-lexer` — `ShebangDirective(String)` token variant — **Issue #32**
+- `forge-ast` — `Directive`, `DirectiveKind`, and supporting enums; `directives:
+  Vec<Directive>` on `Program` — **Issue #33**
+- `forge-parser` — collect leading directives, validate structure, emit
+  `ParseError::DirectiveAfterStatement` — **Issue #34**
+- `forge-exec` — enforce `min-version`, `platform`, `strict`, `timeout`,
+  `jobs`, `env-file`, `require-env`, `override` — **Issue #35** (v0.3)
 
 ### Dependencies
 
-- RFC-001 (module system) — needed to fully resolve UQ-2
-- RFC-007 (AI agent layer) — needed to resolve UQ-3
-- RFC-014 (release policy) — ABI stability enforcement links to versioning
+- RFC-001 §2 — superseded by this RFC for directive specification
+- RFC-004 — `env-file` loading semantics follow RFC-004's `.env` model
+- RFC-005 — confirms `forge-plugin.toml` owns `abi` and `entrypoint`
+- RFC-007 — `agent` key definition deferred here
+- RFC-014 — `min-version` enforcement ties to the release versioning model
 
 ### Milestones
 
-1. `forge-lexer`: add `ShebangDirective` token variant and tests — **Issue #32**
-2. `forge-ast`: add `Directive` types and update `Program` — **Issue #33**
-3. `forge-parser`: collect and validate directives — **Issue #34**
-4. `forge-exec`: enforce ABI directive at runtime — defer to v0.3
-
-Milestones 1–3 target **v0.2 — Pipeline** (current milestone).
-Milestone 4 targets **v0.3 — Execution**.
+Issues #32, #33, #34 target **v0.2 — Pipeline**.
+Issue #35 targets **v0.3 — Execution**.
 
 ---
 
 ## References
 
-- [Unix shebang](https://en.wikipedia.org/wiki/Shebang_(Unix))
+- [Unix shebang — Wikipedia](https://en.wikipedia.org/wiki/Shebang_(Unix))
+- [Rust edition system](https://doc.rust-lang.org/edition-guide/)
+- [Go minimum version selection](https://research.swtch.com/vgo-mvs)
 - [RFC-001 — ForgeScript Language Syntax & Type System](https://github.com/forge-shell/forge-shell/blob/main/docs/rfc-001-forgescript-syntax.md)
+- [RFC-004 — Path & Environment Variable Model](https://github.com/forge-shell/forge-shell/blob/main/docs/rfc-004-path-and-env.md)
+- [RFC-005 — Plugin System & WASM Capability Model](https://github.com/forge-shell/forge-shell/blob/main/docs/rfc-005-plugin-system.md)
 - [RFC-007 — AI Agent Layer & MCP Protocol Integration](https://github.com/forge-shell/forge-shell/blob/main/docs/rfc-007-ai-agent-layer.md)
 - [RFC-014 — Release Policy & Versioning](https://github.com/forge-shell/forge-shell/blob/main/docs/rfc-014-release-policy.md)
