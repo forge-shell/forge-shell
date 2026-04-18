@@ -6,16 +6,8 @@ mod error;
 mod lexer;
 
 pub use error::LexError;
+pub use forge_types::Span;
 pub use lexer::Lexer;
-
-/// A position in the source text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-    pub line: usize,
-    pub col: usize,
-}
 
 /// A segment of an interpolated string — either a literal text chunk or an embedded expression.
 #[derive(Debug, Clone, PartialEq)]
