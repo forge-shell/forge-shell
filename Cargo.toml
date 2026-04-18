@@ -4,6 +4,7 @@ members = [".", "crates/forge-types", "crates/forge-lexer", "crates/forge-ast", 
 
 [workspace.dependencies]
 forge-types = { path = "crates/forge-types" }
+forge-hir = { path = "crates/forge-hir" }
 thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
