@@ -2,6 +2,7 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod directive;
 pub mod expr;
 pub mod literal;
 pub mod op;
@@ -10,7 +11,9 @@ pub mod program;
 pub mod stmt;
 pub mod ty;
 
+pub use directive::{Directive, DirectiveKind, JobLimit, OverflowMode, Platform};
 pub use expr::{Arg, Block, Expr, InterpolatedPart, MatchArm};
+pub use forge_types::Span;
 pub use literal::Literal;
 pub use op::{BinaryOp, UnaryOp};
 pub use pattern::Pattern;

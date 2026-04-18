@@ -1,5 +1,5 @@
 [package]
-name = "forge-ast"
+name = "forge-types"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,9 +7,4 @@ edition = "2024"
 serde = ["dep:serde"]
 
 [dependencies]
-forge-types.workspace = true
-thiserror.workspace = true
 serde = { workspace = true, optional = true }
-
-[dev-dependencies]
-tempfile.workspace = true

@@ -85,6 +85,7 @@ dependencies = [
 name = "forge-ast"
 version = "0.1.0"
 dependencies = [
+ "forge-types",
  "serde",
  "tempfile",
  "thiserror",
@@ -126,6 +127,7 @@ dependencies = [
 name = "forge-lexer"
 version = "0.1.0"
 dependencies = [
+ "forge-types",
  "tempfile",
  "thiserror",
 ]
@@ -152,6 +154,13 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "forge-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

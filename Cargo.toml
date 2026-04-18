@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-builtins", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
+members = [".", "crates/forge-types", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-builtins", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
 
 [workspace.dependencies]
+forge-types = { path = "crates/forge-types" }
 thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
