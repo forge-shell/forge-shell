@@ -71,7 +71,8 @@ Every plugin ships a `forge-plugin.toml` manifest:
 [plugin]
 name        = "forge-git"
 version     = "1.2.0"
-abi         = "1"               # target ABI version
+abi         = 1                 # target ABI version — integer, not semver
+entrypoint  = "src/main.fgs"   # path to the plugin's ForgeScript entry point
 description = "Git integration for Forge Shell"
 authors     = ["Ajitem Sahasrabuddhe"]
 license     = "MIT"
@@ -127,6 +128,19 @@ type        = "GitStatus"
 version     = 1
 ```
 
+> **`abi` is owned by `forge-plugin.toml`.** It is not declared via a
+> `#!forge:` script directive. A `.fgs` file that is a plugin entry point
+> is a regular ForgeScript file — it has no special syntax distinguishing
+> it from any other script. Plugin identity is declared entirely in
+> `forge-plugin.toml`.
+>
+> The `abi` key is reserved in the script directive namespace ([RFC-016](https://github.com/forge-shell/forge-shell/blob/main/docs/rfc-016-shebang-directives.md) §7)
+> and will produce a compile-time warning if used in a `#!forge:abi = ...`
+> directive, directing the author to `forge-plugin.toml` instead.
+
+> **See [RFC-016](https://github.com/forge-shell/forge-shell/blob/main/docs/rfc-016-shebang-directives.md)** for the script directive specification and the boundary
+> between script-level configuration and plugin manifest configuration.
+
 ---
 
 ### 3. ABI Versioning
@@ -151,7 +165,18 @@ forge-plugin/abi/v2    — ABI v2 host implementation (when it exists)
 
 ---
 
-### 4. Plugin SDK — Separate Repositories
+### 4. `entrypoint` Rules
+
+- Path is relative to the directory containing `forge-plugin.toml`.
+- Defaults to `main.fgs` if omitted — convention over configuration.
+- The referenced file must exist at plugin install time or installation fails
+  with `PluginError::EntrypointNotFound`.
+- The entry point file must NOT contain a `#!plugin:` directive — the
+  manifest is the sole declaration of plugin identity.
+
+---
+
+### 5. Plugin SDK — Separate Repositories
 
 The plugin SDK lives in separate repositories — independent release cadence,
 distinct audience, lighter CI for plugin authors.

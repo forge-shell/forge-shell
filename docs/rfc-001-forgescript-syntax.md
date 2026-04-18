@@ -60,11 +60,14 @@ directives, parsed by the `forge` runtime on all platforms.
 
 ```forge
 #!/usr/bin/env forge
-#!forge:version     = "1.0.0"
 #!forge:description = "Deploy script for the production environment"
 #!forge:author      = "Ajitem Sahasrabuddhe"
+#!forge:min-version = "0.3.0"
+#!forge:platform    = "unix"
 #!forge:overflow    = "saturate"
-#!forge:override    = "ls"
+#!forge:strict      = true
+#!forge:timeout     = "5m"
+#!forge:require-env = "DATABASE_URL,API_KEY"
 ```
 
 **Rules:**
@@ -77,14 +80,20 @@ directives, parsed by the `forge` runtime on all platforms.
 
 **Supported `#!forge:` directives (v1):**
 
-| Directive | Values | Default |
-|---|---|---|
-| `version` | semver string | — |
-| `description` | string | — |
-| `author` | string | — |
-| `overflow` | `"panic"` \| `"saturate"` \| `"wrap"` | `"panic"` |
-| `override` | built-in command name | — |
-
+| Directive | Values | Default | Runtime enforcement |
+|---|---|---|---|
+| `description` | string | — | Metadata only |
+| `author` | string | — | Metadata only |
+| `min-version` | semver string | — | Hard error if runtime is older |
+| `platform` | `all` \| `unix` \| `linux` \| `macos` \| `windows` | `all` | Hard error if platform not in list |
+| `overflow` | `panic` \| `saturate` \| `wrap` | `panic` | Enforced by executor |
+| `strict` | `true` \| `false` | `false` | Enforced by executor |
+| `timeout` | duration string (`30s`, `5m`) | — | Enforced by executor |
+| `jobs` | integer \| `auto` | `auto` | Enforced by executor |
+| `env-file` | path string | — | Loaded before execution |
+| `require-env` | comma-separated var names | — | Validated before execution |
+| `override` | built-in command name | — | Enforced by resolver |
+ 
 ---
 
 ### 3. Comments
