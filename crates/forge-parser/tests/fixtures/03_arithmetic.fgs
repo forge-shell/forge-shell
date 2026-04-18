@@ -1,0 +1,7 @@
+let a = 10 + 5
+let b = 10 - 3
+let c = 4 * 5
+let d = 20 / 4
+let e = 10 % 3
+let f = 2 + 3 * 4
+let g = (2 + 3) * 4

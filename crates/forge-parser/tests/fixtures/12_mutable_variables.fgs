@@ -1,0 +1,3 @@
+let mut counter = 0
+let mut name = "initial"
+let immutable = 42

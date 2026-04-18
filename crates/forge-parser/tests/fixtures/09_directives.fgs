@@ -1,0 +1,11 @@
+#!/usr/bin/env forge
+#!forge:description = "Test script for directive parsing"
+#!forge:author = "Ajitem Sahasrabuddhe"
+#!forge:min-version = "0.2.0"
+#!forge:platform = "unix"
+#!forge:overflow = "saturate"
+#!forge:strict = true
+#!forge:timeout = "30s"
+#!forge:require-env = "HOME,PATH"
+
+let x = 1
