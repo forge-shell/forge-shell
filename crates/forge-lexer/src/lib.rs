@@ -363,14 +363,14 @@ mod tests {
     fn part_literal(p: &StringPart) -> &str {
         match p {
             StringPart::Literal(s) => s,
-            _ => panic!("expected Literal"),
+            StringPart::Interpolation(_) => panic!("expected Literal"),
         }
     }
 
     fn part_interp_kinds(p: &StringPart) -> Vec<TokenKind> {
         match p {
             StringPart::Interpolation(tokens) => tokens.iter().map(|t| t.kind.clone()).collect(),
-            _ => panic!("expected Interpolation"),
+            StringPart::Literal(_) => panic!("expected Interpolation"),
         }
     }
 
