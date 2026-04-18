@@ -3,8 +3,12 @@ name = "forge-ast"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
 thiserror.workspace = true
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
