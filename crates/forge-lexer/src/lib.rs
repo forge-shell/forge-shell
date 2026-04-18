@@ -17,13 +17,23 @@ pub struct Span {
     pub col: usize,
 }
 
+/// A segment of an interpolated string — either a literal text chunk or an embedded expression.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringPart {
+    Literal(String),
+    Interpolation(Vec<SpannedToken>),
+}
+
 /// The 'kind' of a token: what it represents in the grammar.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // --- Literals ---
     Integer(i64),
     Float(f64),
+    /// A plain string with no interpolation: `"hello"`.
     StringLit(String),
+    /// A string containing `{expr}` interpolations: `"Hello, {name}!"`.
+    InterpolatedStr(Vec<StringPart>),
     Bool(bool),
 
     // --- Identifiers and Keywords ---
@@ -339,5 +349,141 @@ mod tests {
     fn test_integer_overflow_error() {
         let result = Lexer::new("99999999999999999999999999").tokenise();
         assert!(matches!(result, Err(LexError::InvalidNumber { .. })));
+    }
+
+    // --- String interpolation ---
+
+    fn interp_parts(src: &str) -> Vec<StringPart> {
+        match tokenise(src).into_iter().next().unwrap() {
+            TokenKind::InterpolatedStr(parts) => parts,
+            other => panic!("expected InterpolatedStr, got {other:?}"),
+        }
+    }
+
+    fn part_literal(p: &StringPart) -> &str {
+        match p {
+            StringPart::Literal(s) => s,
+            _ => panic!("expected Literal"),
+        }
+    }
+
+    fn part_interp_kinds(p: &StringPart) -> Vec<TokenKind> {
+        match p {
+            StringPart::Interpolation(tokens) => tokens.iter().map(|t| t.kind.clone()).collect(),
+            _ => panic!("expected Interpolation"),
+        }
+    }
+
+    #[test]
+    fn test_plain_string_unchanged() {
+        assert_eq!(
+            tokenise(r#""hello""#),
+            vec![TokenKind::StringLit("hello".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_simple_variable_interpolation() {
+        let parts = interp_parts(r#""Hello, {name}!""#);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(part_literal(&parts[0]), "Hello, ");
+        assert_eq!(
+            part_interp_kinds(&parts[1]),
+            vec![TokenKind::Ident("name".to_string())]
+        );
+        assert_eq!(part_literal(&parts[2]), "!");
+    }
+
+    #[test]
+    fn test_expression_interpolation() {
+        let parts = interp_parts(r#""Result is {a + b}""#);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(part_literal(&parts[0]), "Result is ");
+        assert_eq!(
+            part_interp_kinds(&parts[1]),
+            vec![
+                TokenKind::Ident("a".to_string()),
+                TokenKind::Plus,
+                TokenKind::Ident("b".to_string()),
+            ]
+        );
+        assert_eq!(part_literal(&parts[2]), "");
+    }
+
+    #[test]
+    fn test_method_call_interpolation() {
+        let parts = interp_parts(r#""Items: {list.len()}""#);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(part_literal(&parts[0]), "Items: ");
+        assert_eq!(
+            part_interp_kinds(&parts[1]),
+            vec![
+                TokenKind::Ident("list".to_string()),
+                TokenKind::Dot,
+                TokenKind::Ident("len".to_string()),
+                TokenKind::LParen,
+                TokenKind::RParen,
+            ]
+        );
+        assert_eq!(part_literal(&parts[2]), "");
+    }
+
+    #[test]
+    fn test_nested_braces_in_interpolation() {
+        // `{if true {1} else {2}}` — braces inside expression are depth-tracked
+        let parts = interp_parts(r#""{if true {1} else {2}}""#);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(part_literal(&parts[0]), "");
+        let kinds = part_interp_kinds(&parts[1]);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::If,
+                TokenKind::Bool(true),
+                TokenKind::LBrace,
+                TokenKind::Integer(1),
+                TokenKind::RBrace,
+                TokenKind::Else,
+                TokenKind::LBrace,
+                TokenKind::Integer(2),
+                TokenKind::RBrace,
+            ]
+        );
+        assert_eq!(part_literal(&parts[2]), "");
+    }
+
+    #[test]
+    fn test_multiple_interpolations() {
+        let parts = interp_parts(r#""{a} and {b}""#);
+        assert_eq!(parts.len(), 5);
+        assert_eq!(part_literal(&parts[0]), "");
+        assert_eq!(
+            part_interp_kinds(&parts[1]),
+            vec![TokenKind::Ident("a".to_string())]
+        );
+        assert_eq!(part_literal(&parts[2]), " and ");
+        assert_eq!(
+            part_interp_kinds(&parts[3]),
+            vec![TokenKind::Ident("b".to_string())]
+        );
+        assert_eq!(part_literal(&parts[4]), "");
+    }
+
+    #[test]
+    fn test_escaped_braces_not_interpolated() {
+        assert_eq!(
+            tokenise(r#""Set notation: {{1, 2, 3}}""#),
+            vec![TokenKind::StringLit("Set notation: {1, 2, 3}".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_unterminated_interpolation_error() {
+        // No closing `}` or `"` — EOF inside the interpolation.
+        let result = Lexer::new(r#""Hello, {name"#).tokenise();
+        assert!(matches!(
+            result,
+            Err(LexError::UnterminatedInterpolation { .. })
+        ));
     }
 }
