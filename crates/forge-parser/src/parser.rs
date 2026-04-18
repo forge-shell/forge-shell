@@ -22,11 +22,28 @@ impl Parser {
     pub fn parse(&mut self) -> Result<Program, ParseError> {
         let directives = self.parse_directives()?;
         let mut stmts = Vec::new();
-        self.skip_newlines();
-        while !self.check_kind(&TokenKind::Eof) {
-            stmts.push(self.parse_statement()?);
+
+        while !self.is_at_end() {
             self.skip_newlines();
+            if self.is_at_end() {
+                break;
+            }
+
+            // Guard must be here — before parse_statement
+            if let TokenKind::ShebangDirective(raw) = self.peek_kind().clone() {
+                let key = raw
+                    .strip_prefix("forge:")
+                    .and_then(|r| r.split_once(" = ").map(|(k, _)| k.trim().to_string()))
+                    .unwrap_or_else(|| raw.clone());
+                return Err(ParseError::DirectiveAfterStatement {
+                    key,
+                    line: self.current_line(),
+                });
+            }
+
+            stmts.push(self.parse_statement()?);
         }
+
         Ok(Program { directives, stmts })
     }
 
@@ -103,6 +120,10 @@ impl Parser {
                 line: self.current_line(),
             }),
         }
+    }
+
+    fn is_at_end(&self) -> bool {
+        matches!(self.peek_kind(), TokenKind::Eof)
     }
 
     fn skip_newlines(&mut self) {
