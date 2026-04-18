@@ -23,6 +23,10 @@ pub enum TokenKind {
     // --- Literals ---
     Integer(i64),
     Float(f64),
+    /// An environment variable reference: `$NAME`.
+    /// The inner string is the variable name without the `$` prefix.
+    EnvVar(String),
+
     /// A plain string with no interpolation: `"hello"`.
     StringLit(String),
     /// A string containing `{expr}` interpolations: `"Hello, {name}!"`.
@@ -33,6 +37,8 @@ pub enum TokenKind {
     Ident(String),
     Fn,
     Let,
+    /// The `mut` keyword.
+    Mut,
     If,
     Else,
     Return,
@@ -126,9 +132,11 @@ impl fmt::Display for TokenKind {
             }
             TokenKind::Bool(b) => write!(f, "{b}"),
             TokenKind::Ident(s) => write!(f, "{s}"),
+            TokenKind::EnvVar(name) => write!(f, "${name}"),
             TokenKind::ShebangDirective(s) => write!(f, "#!{s}"),
             TokenKind::Fn => write!(f, "fn"),
             TokenKind::Let => write!(f, "let"),
+            TokenKind::Mut => write!(f, "mut"),
             TokenKind::If => write!(f, "if"),
             TokenKind::Else => write!(f, "else"),
             TokenKind::Return => write!(f, "return"),
@@ -232,6 +240,7 @@ mod tests {
         let keywords = vec![
             TokenKind::Fn,
             TokenKind::Let,
+            TokenKind::Mut,
             TokenKind::If,
             TokenKind::Else,
             TokenKind::Return,
@@ -336,6 +345,7 @@ mod tests {
     fn test_keywords() {
         assert_eq!(tokenise("fn"), vec![TokenKind::Fn]);
         assert_eq!(tokenise("let"), vec![TokenKind::Let]);
+        assert_eq!(tokenise("mut"), vec![TokenKind::Mut]);
         assert_eq!(tokenise("if"), vec![TokenKind::If]);
         assert_eq!(tokenise("else"), vec![TokenKind::Else]);
         assert_eq!(tokenise("return"), vec![TokenKind::Return]);
@@ -631,6 +641,35 @@ mod tests {
                 TokenKind::Assign,
                 TokenKind::Integer(1),
             ]
+        );
+    }
+
+    #[test]
+    fn test_env_var_token() {
+        assert_eq!(
+            tokenise("$HOME"),
+            vec![TokenKind::EnvVar("HOME".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_env_var_in_expression() {
+        assert_eq!(
+            tokenise("$PATH"),
+            vec![TokenKind::EnvVar("PATH".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_bare_dollar_remains_dollar() {
+        assert_eq!(tokenise("$"), vec![TokenKind::Dollar]);
+    }
+
+    #[test]
+    fn test_env_var_with_underscore() {
+        assert_eq!(
+            tokenise("$MY_VAR"),
+            vec![TokenKind::EnvVar("MY_VAR".to_string())]
         );
     }
 }

@@ -119,8 +119,11 @@ dependencies = [
 name = "forge-hir"
 version = "0.1.0"
 dependencies = [
+ "forge-ast",
+ "forge-types",
  "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

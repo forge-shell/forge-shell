@@ -84,6 +84,7 @@ impl Lexer {
         ))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn lex_symbol(
         &mut self,
         ch: char,
@@ -104,7 +105,24 @@ impl Lexer {
             ',' => TokenKind::Comma,
             ';' => TokenKind::Semicolon,
             ':' => TokenKind::Colon,
-            '$' => TokenKind::Dollar,
+            '$' => {
+                if self
+                    .peek()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || *c == '_')
+                {
+                    let mut name = String::new();
+                    while self
+                        .peek()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    {
+                        name.push(self.advance());
+                    }
+                    TokenKind::EnvVar(name)
+                } else {
+                    // Bare `$` with no identifier — keep as Dollar for other uses
+                    TokenKind::Dollar
+                }
+            }
             '@' => TokenKind::At,
             '#' => self.lex_shebang_directive(),
             '-' => {
@@ -334,6 +352,7 @@ impl Lexer {
         match ident.as_str() {
             "fn" => TokenKind::Fn,
             "let" => TokenKind::Let,
+            "mut" => TokenKind::Mut,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "return" => TokenKind::Return,
