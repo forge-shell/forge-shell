@@ -1,5 +1,5 @@
 use crate::error::LexError;
-use crate::{Span, SpannedToken, TokenKind};
+use crate::{Span, SpannedToken, StringPart, TokenKind};
 
 /// Transforms a `ForgeScript` source string into a flat sequence of [`SpannedToken`]s.
 ///
@@ -180,9 +180,11 @@ impl Lexer {
 
     fn lex_string(&mut self, start_line: usize, start_col: usize) -> Result<TokenKind, LexError> {
         let mut s = String::new();
+        let mut parts: Vec<StringPart> = Vec::new();
+        let mut has_interp = false;
 
         loop {
-            match self.peek() {
+            match self.peek().copied() {
                 None => {
                     return Err(LexError::UnterminatedString {
                         line: start_line,
@@ -192,6 +194,31 @@ impl Lexer {
                 Some('"') => {
                     self.advance();
                     break;
+                }
+                Some('{') => {
+                    if self.peek_next() == Some(&'{') {
+                        // `{{` → literal `{`
+                        self.advance();
+                        self.advance();
+                        s.push('{');
+                    } else {
+                        // start of interpolation
+                        has_interp = true;
+                        parts.push(StringPart::Literal(std::mem::take(&mut s)));
+                        self.advance(); // consume `{`
+                        let expr_tokens = self.lex_interp_part(start_line, start_col)?;
+                        parts.push(StringPart::Interpolation(expr_tokens));
+                    }
+                }
+                Some('}') => {
+                    if self.peek_next() == Some(&'}') {
+                        // `}}` → literal `}`
+                        self.advance();
+                        self.advance();
+                        s.push('}');
+                    } else {
+                        s.push(self.advance());
+                    }
                 }
                 Some('\\') => {
                     self.advance();
@@ -209,7 +236,55 @@ impl Lexer {
             }
         }
 
-        Ok(TokenKind::StringLit(s))
+        if has_interp {
+            parts.push(StringPart::Literal(s));
+            Ok(TokenKind::InterpolatedStr(parts))
+        } else {
+            Ok(TokenKind::StringLit(s))
+        }
+    }
+
+    /// Lex the expression tokens inside `{...}` until the depth-0 closing `}`.
+    /// The opening `{` must already have been consumed by the caller.
+    fn lex_interp_part(
+        &mut self,
+        str_start_line: usize,
+        str_start_col: usize,
+    ) -> Result<Vec<SpannedToken>, LexError> {
+        let mut tokens = Vec::new();
+        let mut depth = 0usize;
+
+        loop {
+            self.skip_whitespace_and_comments();
+
+            if self.is_at_end() {
+                return Err(LexError::UnterminatedInterpolation {
+                    line: str_start_line,
+                    col: str_start_col,
+                });
+            }
+
+            match self.peek().copied() {
+                Some('}') if depth == 0 => {
+                    self.advance(); // consume closing `}`
+                    break;
+                }
+                Some('{') => {
+                    depth += 1;
+                    tokens.push(self.next_token()?);
+                }
+                Some('}') => {
+                    // depth > 0: closing a nested brace pair inside the expression
+                    depth -= 1;
+                    tokens.push(self.next_token()?);
+                }
+                _ => {
+                    tokens.push(self.next_token()?);
+                }
+            }
+        }
+
+        Ok(tokens)
     }
 
     fn lex_number(&mut self, first: char) -> Result<TokenKind, LexError> {

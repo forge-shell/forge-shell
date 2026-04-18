@@ -18,4 +18,8 @@ pub enum LexError {
         line: usize,
         col: usize,
     },
+
+    /// A `{` interpolation inside a string was never closed with `}`.
+    #[error("unterminated string interpolation in string starting at line {line}, column {col}")]
+    UnterminatedInterpolation { line: usize, col: usize },
 }
