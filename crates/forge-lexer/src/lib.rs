@@ -8,6 +8,7 @@ mod lexer;
 pub use error::LexError;
 pub use forge_types::Span;
 pub use lexer::Lexer;
+use std::fmt;
 
 /// A segment of an interpolated string — either a literal text chunk or an embedded expression.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +38,7 @@ pub enum TokenKind {
     Return,
     Import,
     Export,
+    While,
 
     // --- Arithmetic operators ---
     Plus,
@@ -98,6 +100,78 @@ pub enum TokenKind {
     ///   `#!forge:overflow = "saturate"` →  `ShebangDirective("forge:overflow = \"saturate\"")`
     ///   `#!forge:strict = true`         →  `ShebangDirective("forge:strict = true")`
     ShebangDirective(String),
+}
+
+impl fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenKind::Integer(n) => write!(f, "{n}"),
+            TokenKind::Float(n) => write!(f, "{n}"),
+            TokenKind::StringLit(s) => write!(f, "\"{s}\""),
+            TokenKind::InterpolatedStr(parts) => {
+                write!(f, "\"")?;
+                for part in parts {
+                    match part {
+                        StringPart::Literal(s) => write!(f, "{s}")?,
+                        StringPart::Interpolation(tokens) => {
+                            write!(f, "{{")?;
+                            for t in tokens {
+                                write!(f, "{}", t.kind)?;
+                            }
+                            write!(f, "}}")?;
+                        }
+                    }
+                }
+                write!(f, "\"")
+            }
+            TokenKind::Bool(b) => write!(f, "{b}"),
+            TokenKind::Ident(s) => write!(f, "{s}"),
+            TokenKind::ShebangDirective(s) => write!(f, "#!{s}"),
+            TokenKind::Fn => write!(f, "fn"),
+            TokenKind::Let => write!(f, "let"),
+            TokenKind::If => write!(f, "if"),
+            TokenKind::Else => write!(f, "else"),
+            TokenKind::Return => write!(f, "return"),
+            TokenKind::Import => write!(f, "import"),
+            TokenKind::Export => write!(f, "export"),
+            TokenKind::While => write!(f, "while"),
+            TokenKind::Plus => write!(f, "+"),
+            TokenKind::Minus => write!(f, "-"),
+            TokenKind::Star => write!(f, "*"),
+            TokenKind::Slash => write!(f, "/"),
+            TokenKind::Percent => write!(f, "%"),
+            TokenKind::EqEq => write!(f, "=="),
+            TokenKind::Ne => write!(f, "!="),
+            TokenKind::Lt | TokenKind::RedirectIn => write!(f, "<"),
+            TokenKind::Le => write!(f, "<="),
+            TokenKind::Gt | TokenKind::RedirectOut => write!(f, ">"),
+            TokenKind::Ge => write!(f, ">="),
+            TokenKind::And => write!(f, "&&"),
+            TokenKind::Or => write!(f, "||"),
+            TokenKind::Not => write!(f, "!"),
+            TokenKind::Assign => write!(f, "="),
+            TokenKind::Pipe => write!(f, "|"),
+            TokenKind::Amp => write!(f, "&"),
+            TokenKind::RedirectAppend => write!(f, ">>"),
+            TokenKind::LParen => write!(f, "("),
+            TokenKind::RParen => write!(f, ")"),
+            TokenKind::LBrace => write!(f, "{{"),
+            TokenKind::RBrace => write!(f, "}}"),
+            TokenKind::LBracket => write!(f, "["),
+            TokenKind::RBracket => write!(f, "]"),
+            TokenKind::Comma => write!(f, ","),
+            TokenKind::Semicolon => write!(f, ";"),
+            TokenKind::Colon => write!(f, ":"),
+            TokenKind::Dot => write!(f, "."),
+            TokenKind::DotDot => write!(f, ".."),
+            TokenKind::Arrow => write!(f, "->"),
+            TokenKind::FatArrow => write!(f, "=>"),
+            TokenKind::Dollar => write!(f, "$"),
+            TokenKind::At => write!(f, "@"),
+            TokenKind::Newline => write!(f, "<newline>"),
+            TokenKind::Eof => write!(f, "<eof>"),
+        }
+    }
 }
 
 /// A token with its location in the source.

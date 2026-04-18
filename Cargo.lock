@@ -136,8 +136,11 @@ dependencies = [
 name = "forge-parser"
 version = "0.1.0"
 dependencies = [
+ "forge-ast",
+ "forge-lexer",
  "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
