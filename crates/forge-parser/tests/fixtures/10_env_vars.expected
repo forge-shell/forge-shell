@@ -1,0 +1,37 @@
+Program {
+    directives: [],
+    stmts: [
+        Let {
+            name: "home",
+            mutable: false,
+            ty: None,
+            value: EnvVar(
+                "HOME",
+            ),
+        },
+        Let {
+            name: "path",
+            mutable: false,
+            ty: None,
+            value: EnvVar(
+                "PATH",
+            ),
+        },
+        Let {
+            name: "user",
+            mutable: false,
+            ty: None,
+            value: EnvVar(
+                "USER",
+            ),
+        },
+        Let {
+            name: "combined",
+            mutable: false,
+            ty: None,
+            value: EnvVar(
+                "HOME",
+            ),
+        },
+    ],
+}

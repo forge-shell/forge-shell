@@ -1,0 +1,120 @@
+Program {
+    directives: [
+        Directive {
+            kind: UnixShebang(
+                "/usr/bin/env forge",
+            ),
+            span: Span {
+                start: 0,
+                end: 20,
+                line: 1,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: Description(
+                "Test script for directive parsing",
+            ),
+            span: Span {
+                start: 21,
+                end: 78,
+                line: 2,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: Author(
+                "Ajitem Sahasrabuddhe",
+            ),
+            span: Span {
+                start: 79,
+                end: 118,
+                line: 3,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: MinVersion(
+                "0.2.0",
+            ),
+            span: Span {
+                start: 119,
+                end: 148,
+                line: 4,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: Platform(
+                [
+                    Unix,
+                ],
+            ),
+            span: Span {
+                start: 149,
+                end: 174,
+                line: 5,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: Overflow(
+                Saturate,
+            ),
+            span: Span {
+                start: 175,
+                end: 204,
+                line: 6,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: Strict(
+                true,
+            ),
+            span: Span {
+                start: 205,
+                end: 226,
+                line: 7,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: Timeout(
+                "30s",
+            ),
+            span: Span {
+                start: 227,
+                end: 250,
+                line: 8,
+                col: 1,
+            },
+        },
+        Directive {
+            kind: RequireEnv(
+                [
+                    "HOME",
+                    "PATH",
+                ],
+            ),
+            span: Span {
+                start: 251,
+                end: 284,
+                line: 9,
+                col: 1,
+            },
+        },
+    ],
+    stmts: [
+        Let {
+            name: "x",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Int(
+                    1,
+                ),
+            ),
+        },
+    ],
+}

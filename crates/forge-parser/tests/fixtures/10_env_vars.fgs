@@ -1,0 +1,4 @@
+let home = $HOME
+let path = $PATH
+let user = $USER
+let combined = $HOME

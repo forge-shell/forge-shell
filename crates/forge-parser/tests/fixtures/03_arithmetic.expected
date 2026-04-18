@@ -1,0 +1,147 @@
+Program {
+    directives: [],
+    stmts: [
+        Let {
+            name: "a",
+            mutable: false,
+            ty: None,
+            value: BinaryOp {
+                op: Add,
+                lhs: Literal(
+                    Int(
+                        10,
+                    ),
+                ),
+                rhs: Literal(
+                    Int(
+                        5,
+                    ),
+                ),
+            },
+        },
+        Let {
+            name: "b",
+            mutable: false,
+            ty: None,
+            value: BinaryOp {
+                op: Sub,
+                lhs: Literal(
+                    Int(
+                        10,
+                    ),
+                ),
+                rhs: Literal(
+                    Int(
+                        3,
+                    ),
+                ),
+            },
+        },
+        Let {
+            name: "c",
+            mutable: false,
+            ty: None,
+            value: BinaryOp {
+                op: Mul,
+                lhs: Literal(
+                    Int(
+                        4,
+                    ),
+                ),
+                rhs: Literal(
+                    Int(
+                        5,
+                    ),
+                ),
+            },
+        },
+        Let {
+            name: "d",
+            mutable: false,
+            ty: None,
+            value: BinaryOp {
+                op: Div,
+                lhs: Literal(
+                    Int(
+                        20,
+                    ),
+                ),
+                rhs: Literal(
+                    Int(
+                        4,
+                    ),
+                ),
+            },
+        },
+        Let {
+            name: "e",
+            mutable: false,
+            ty: None,
+            value: BinaryOp {
+                op: Rem,
+                lhs: Literal(
+                    Int(
+                        10,
+                    ),
+                ),
+                rhs: Literal(
+                    Int(
+                        3,
+                    ),
+                ),
+            },
+        },
+        Let {
+            name: "f",
+            mutable: false,
+            ty: None,
+            value: BinaryOp {
+                op: Add,
+                lhs: Literal(
+                    Int(
+                        2,
+                    ),
+                ),
+                rhs: BinaryOp {
+                    op: Mul,
+                    lhs: Literal(
+                        Int(
+                            3,
+                        ),
+                    ),
+                    rhs: Literal(
+                        Int(
+                            4,
+                        ),
+                    ),
+                },
+            },
+        },
+        Let {
+            name: "g",
+            mutable: false,
+            ty: None,
+            value: BinaryOp {
+                op: Mul,
+                lhs: BinaryOp {
+                    op: Add,
+                    lhs: Literal(
+                        Int(
+                            2,
+                        ),
+                    ),
+                    rhs: Literal(
+                        Int(
+                            3,
+                        ),
+                    ),
+                },
+                rhs: Literal(
+                    Int(
+                        4,
+                    ),
+                ),
+            },
+        },
+    ],
+}

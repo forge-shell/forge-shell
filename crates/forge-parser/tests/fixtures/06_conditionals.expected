@@ -1,0 +1,79 @@
+Program {
+    directives: [],
+    stmts: [
+        Let {
+            name: "x",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Int(
+                    10,
+                ),
+            ),
+        },
+        ExprStmt(
+            If {
+                cond: Ident(
+                    "x",
+                ),
+                then_branch: Block {
+                    stmts: [
+                        Let {
+                            name: "msg",
+                            mutable: false,
+                            ty: None,
+                            value: Literal(
+                                Str(
+                                    "truthy",
+                                ),
+                            ),
+                        },
+                    ],
+                    tail: None,
+                },
+                else_branch: None,
+            },
+        ),
+        ExprStmt(
+            If {
+                cond: Ident(
+                    "x",
+                ),
+                then_branch: Block {
+                    stmts: [
+                        Let {
+                            name: "a",
+                            mutable: false,
+                            ty: None,
+                            value: Literal(
+                                Int(
+                                    1,
+                                ),
+                            ),
+                        },
+                    ],
+                    tail: None,
+                },
+                else_branch: Some(
+                    Block(
+                        Block {
+                            stmts: [
+                                Let {
+                                    name: "a",
+                                    mutable: false,
+                                    ty: None,
+                                    value: Literal(
+                                        Int(
+                                            2,
+                                        ),
+                                    ),
+                                },
+                            ],
+                            tail: None,
+                        },
+                    ),
+                ),
+            },
+        ),
+    ],
+}

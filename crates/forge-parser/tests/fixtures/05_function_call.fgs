@@ -1,0 +1,6 @@
+fn double(n) {
+    return n + n
+}
+
+let result = double(21)
+let sum = double(double(5))
