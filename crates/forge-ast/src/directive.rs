@@ -113,7 +113,7 @@ mod directive_tests {
 
     #[test]
     fn test_directive_platform_variants() {
-        let platforms = vec![Platform::Linux, Platform::MacOs];
+        let platforms = [Platform::Linux, Platform::MacOs];
         assert_eq!(platforms.len(), 2);
     }
 
