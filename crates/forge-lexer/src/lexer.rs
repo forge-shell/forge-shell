@@ -346,8 +346,7 @@ impl Lexer {
     }
 
     fn lex_shebang_directive(&mut self) -> TokenKind {
-        // Consume '#' and '!'
-        self.advance();
+        // '#' was already consumed by next_token; consume only '!'
         self.advance();
 
         let mut content = String::new();
