@@ -647,10 +647,7 @@ impl Parser {
     fn parse_expression(&mut self, min_bp: u8) -> Result<Expr, ParseError> {
         let mut left = self.parse_unary()?;
 
-        loop {
-            let Some(op) = self.peek_binary_op() else {
-                break;
-            };
+        while let Some(op) = self.peek_binary_op() {
             let (l_bp, r_bp) = Self::binding_power(&op);
             if l_bp < min_bp {
                 break;
