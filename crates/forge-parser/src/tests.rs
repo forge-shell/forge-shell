@@ -261,6 +261,16 @@ fn test_let_binding() {
 }
 
 #[test]
+fn test_let_immutable_default() {
+    let prog = parse_ok("let x = 42\n");
+    if let Stmt::Let { mutable, .. } = &prog.stmts[0] {
+        assert!(!mutable);
+    } else {
+        panic!("expected Let");
+    }
+}
+
+#[test]
 fn test_let_mut_binding() {
     let prog = parse_ok("let mut count = 0");
     assert_eq!(
@@ -485,6 +495,32 @@ fn test_pipe_operator() {
             }),
         })]
     );
+}
+
+#[test]
+fn test_env_var_expression() {
+    let prog = parse_ok("let x = $HOME\n");
+    if let Stmt::Let {
+        value: Expr::EnvVar(name),
+        ..
+    } = &prog.stmts[0]
+    {
+        assert_eq!(name, "HOME");
+    } else {
+        panic!("expected EnvVar");
+    }
+}
+
+#[test]
+fn test_env_var_in_binary_expr() {
+    let prog = parse_ok("let x = $HOME\n");
+    assert!(matches!(
+        prog.stmts[0],
+        Stmt::Let {
+            value: Expr::EnvVar(_),
+            ..
+        }
+    ));
 }
 
 // --- Error cases ---

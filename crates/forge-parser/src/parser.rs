@@ -504,7 +504,7 @@ impl Parser {
     fn parse_let(&mut self) -> Result<Stmt, ParseError> {
         self.expect_kind(&TokenKind::Let)?;
 
-        let mutable = if self.check_ident("mut") {
+        let mutable = if self.check_kind(&TokenKind::Mut) {
             self.advance();
             true
         } else {
@@ -836,6 +836,10 @@ impl Parser {
                     }
                 }
                 Ok(Expr::Interpolated(interp_parts))
+            }
+            TokenKind::EnvVar(name) => {
+                self.advance();
+                Ok(Expr::EnvVar(name))
             }
             TokenKind::Ident(name) => {
                 self.advance();

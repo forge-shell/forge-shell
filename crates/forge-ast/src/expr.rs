@@ -56,6 +56,10 @@ pub struct MatchArm {
 pub enum Expr {
     Literal(Literal),
     Ident(String),
+    /// An environment variable reference: `$NAME`.
+    /// The inner string is the variable name without `$`.
+    /// Resolved at runtime — not subject to static name resolution.
+    EnvVar(String),
     BinaryOp {
         op: BinaryOp,
         lhs: Box<Expr>,
