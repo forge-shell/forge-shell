@@ -339,6 +339,7 @@ impl Lexer {
             "return" => TokenKind::Return,
             "import" => TokenKind::Import,
             "export" => TokenKind::Export,
+            "while" => TokenKind::While,
             "true" => TokenKind::Bool(true),
             "false" => TokenKind::Bool(false),
             _ => TokenKind::Ident(ident),
