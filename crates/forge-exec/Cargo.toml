@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+forge-backend = { path = "../forge-backend" }
+forge-ast = { path = "../forge-ast" }
+forge-types = { path = "../forge-types" }
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

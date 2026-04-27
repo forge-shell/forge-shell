@@ -3,8 +3,20 @@ resolver = "2"
 members = [".", "crates/forge-types", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-builtins", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
 
 [workspace.dependencies]
-forge-types = { path = "crates/forge-types" }
-forge-hir = { path = "crates/forge-hir" }
+# Internal crates
+forge-types    = { path = "crates/forge-types" }
+forge-lexer    = { path = "crates/forge-lexer" }
+forge-ast      = { path = "crates/forge-ast" }
+forge-parser   = { path = "crates/forge-parser" }
+forge-hir      = { path = "crates/forge-hir" }
+forge-backend  = { path = "crates/forge-backend" }
+forge-exec     = { path = "crates/forge-exec" }
+forge-builtins = { path = "crates/forge-builtins" }
+forge-repl     = { path = "crates/forge-repl" }
+forge-plugin   = { path = "crates/forge-plugin" }
+forge-agent    = { path = "crates/forge-agent" }
+
+# External crates
 thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

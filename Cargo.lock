@@ -95,8 +95,14 @@ dependencies = [
 name = "forge-backend"
 version = "0.1.0"
 dependencies = [
+ "forge-ast",
+ "forge-hir",
+ "forge-types",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -111,8 +117,12 @@ dependencies = [
 name = "forge-exec"
 version = "0.1.0"
 dependencies = [
+ "forge-ast",
+ "forge-backend",
+ "forge-types",
  "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
