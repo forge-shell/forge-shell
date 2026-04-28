@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_display_float() {
-        assert_eq!(Value::Float(3.14).to_string(), "3.14");
+        assert_eq!(Value::Float(1.23).to_string(), "1.23");
     }
 
     #[test]
@@ -355,7 +355,7 @@ mod tests {
     fn test_value_round_trips() {
         let values = vec![
             Value::Int(42),
-            Value::Float(3.14),
+            Value::Float(1.23),
             Value::Str("hello".to_string()),
             Value::Bool(true),
             Value::Null,
