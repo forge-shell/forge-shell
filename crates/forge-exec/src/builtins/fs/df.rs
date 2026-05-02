@@ -47,11 +47,7 @@ impl BuiltinCommand for Df {
         for path in &paths {
             let (fs_total, fs_avail, fs_name) = get_disk_info(path);
             let used = fs_total.saturating_sub(fs_avail);
-            let use_pct = if fs_total > 0 {
-                (used * 100) / fs_total
-            } else {
-                0
-            };
+            let use_pct = (used * 100).checked_div(fs_total).unwrap_or(0);
             grand_total += fs_total;
             grand_used += used;
             grand_avail += fs_avail;
@@ -67,11 +63,7 @@ impl BuiltinCommand for Df {
         }
 
         if total {
-            let grand_pct = if grand_total > 0 {
-                (grand_used * 100) / grand_total
-            } else {
-                0
-            };
+            let grand_pct = (grand_used * 100).checked_div(grand_total).unwrap_or(0);
             println!(
                 "{:<20} {:>12} {:>12} {:>12} {:>5}% -",
                 "total",

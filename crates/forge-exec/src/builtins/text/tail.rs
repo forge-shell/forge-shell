@@ -170,6 +170,7 @@ fn resolve(path: &str, cwd: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::ShellContext;
+    use std::fmt::Write;
     use tempfile::TempDir;
 
     fn ctx_in(tmp: &TempDir) -> ShellContext {
@@ -181,7 +182,10 @@ mod tests {
     #[test]
     fn test_tail_default() {
         let tmp = TempDir::new().unwrap();
-        let content: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        let content: String = (1..=20).fold(String::new(), |mut s, i| {
+            let _ = writeln!(s, "line{i}");
+            s
+        });
         std::fs::write(tmp.path().join("f.txt"), content.as_bytes()).unwrap();
         let mut ctx = ctx_in(&tmp);
         assert_eq!(Tail.run(&["f.txt".into()], &mut ctx).unwrap(), 0);
@@ -190,7 +194,10 @@ mod tests {
     #[test]
     fn test_tail_n() {
         let tmp = TempDir::new().unwrap();
-        let content: String = (1..=5).map(|i| format!("line{i}\n")).collect();
+        let content: String = (1..=5).fold(String::new(), |mut s, i| {
+            let _ = writeln!(s, "line{i}");
+            s
+        });
         std::fs::write(tmp.path().join("f.txt"), content.as_bytes()).unwrap();
         let mut ctx = ctx_in(&tmp);
         assert_eq!(
@@ -203,7 +210,10 @@ mod tests {
     #[test]
     fn test_tail_from_start() {
         let tmp = TempDir::new().unwrap();
-        let content: String = (1..=5).map(|i| format!("line{i}\n")).collect();
+        let content: String = (1..=5).fold(String::new(), |mut s, i| {
+            let _ = writeln!(s, "line{i}");
+            s
+        });
         std::fs::write(tmp.path().join("f.txt"), content.as_bytes()).unwrap();
         let mut ctx = ctx_in(&tmp);
         assert_eq!(

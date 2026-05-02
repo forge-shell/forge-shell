@@ -47,7 +47,7 @@ mod tests {
         }]))
         .unwrap();
         assert_eq!(
-            exec.context.env.get("MY_VAR").map(|s| s.as_str()),
+            exec.context.env.get("MY_VAR").map(String::as_str),
             Some("hello")
         );
     }

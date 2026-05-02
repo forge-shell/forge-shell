@@ -176,7 +176,7 @@ fn get_blocks(meta: &std::fs::Metadata) -> u64 {
 }
 #[cfg(not(unix))]
 fn get_blocks(meta: &std::fs::Metadata) -> u64 {
-    (meta.len() + 511) / 512
+    meta.len().div_ceil(512)
 }
 
 #[cfg(unix)]

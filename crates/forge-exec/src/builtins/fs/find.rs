@@ -428,8 +428,7 @@ fn matches_expr(
             let st = get_ctime_secs(meta);
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-                .unwrap_or(0);
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
             let age_days = (now - st) / 86400;
             cmp_time(age_days, tc)
         }
@@ -437,8 +436,7 @@ fn matches_expr(
             let st = get_ctime_secs(meta);
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-                .unwrap_or(0);
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
             let age_mins = (now - st) / 60;
             cmp_time(age_mins, tc)
         }

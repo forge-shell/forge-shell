@@ -109,19 +109,13 @@ fn list_dir(
     // Sort
     if !no_sort {
         if sort_size {
-            entries.sort_by_key(|e| std::cmp::Reverse(e.metadata().map(|m| m.len()).unwrap_or(0)));
+            entries.sort_by_key(|e| std::cmp::Reverse(e.metadata().map_or(0, |m| m.len())));
         } else if sort_time {
             entries.sort_by_key(|e| {
-                std::cmp::Reverse(
-                    e.metadata()
-                        .and_then(|m| m.modified())
-                        .map(|t| {
-                            t.duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0),
-                )
+                std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).map_or(0, |t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs())
+                }))
             });
         } else {
             entries.sort_by_key(|e| e.file_name().to_string_lossy().to_lowercase());
@@ -303,9 +297,7 @@ fn get_gid_str(_meta: &std::fs::Metadata) -> String {
 #[cfg(unix)]
 fn get_inode(path: &Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
-    std::fs::symlink_metadata(path)
-        .map(|m| m.ino())
-        .unwrap_or(0)
+    std::fs::symlink_metadata(path).map_or(0, |m| m.ino())
 }
 #[cfg(not(unix))]
 fn get_inode(_path: &Path) -> u64 {
@@ -316,9 +308,7 @@ fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(path)
-            .map(|m| m.mode() & 0o111 != 0)
-            .unwrap_or(false)
+        std::fs::metadata(path).is_ok_and(|m| m.mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
