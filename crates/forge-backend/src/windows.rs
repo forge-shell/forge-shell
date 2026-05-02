@@ -174,8 +174,7 @@ fn expand_percent_vars(s: &str, env: &HashMap<String, String>) -> String {
                 let value = env
                     .iter()
                     .find(|(k, _)| k.to_lowercase() == var_name.to_lowercase())
-                    .map(|(_, v)| v.as_str())
-                    .unwrap_or("");
+                    .map_or("", |(_, v)| v.as_str());
                 result.push_str(value);
             } else {
                 result.push('%');
