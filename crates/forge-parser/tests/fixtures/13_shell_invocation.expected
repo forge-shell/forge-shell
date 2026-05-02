@@ -1,0 +1,104 @@
+Program {
+    directives: [],
+    stmts: [
+        ExprStmt(
+            Call {
+                callee: Ident(
+                    "git",
+                ),
+                args: [
+                    Positional(
+                        Literal(
+                            Str(
+                                "status",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+        ExprStmt(
+            Call {
+                callee: Ident(
+                    "ls",
+                ),
+                args: [
+                    Positional(
+                        Literal(
+                            Str(
+                                "-la",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+        ExprStmt(
+            Call {
+                callee: Ident(
+                    "git",
+                ),
+                args: [
+                    Positional(
+                        Literal(
+                            Str(
+                                "commit",
+                            ),
+                        ),
+                    ),
+                    Positional(
+                        Literal(
+                            Str(
+                                "-m",
+                            ),
+                        ),
+                    ),
+                    Positional(
+                        Literal(
+                            Str(
+                                "fix typo",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+        ExprStmt(
+            Call {
+                callee: Ident(
+                    "echo",
+                ),
+                args: [
+                    Positional(
+                        EnvVar(
+                            "HOME",
+                        ),
+                    ),
+                ],
+            },
+        ),
+        ExprStmt(
+            Call {
+                callee: Ident(
+                    "cargo",
+                ),
+                args: [
+                    Positional(
+                        Literal(
+                            Str(
+                                "build",
+                            ),
+                        ),
+                    ),
+                    Positional(
+                        Literal(
+                            Str(
+                                "--release",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}

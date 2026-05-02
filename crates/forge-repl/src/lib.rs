@@ -105,7 +105,11 @@ impl Repl {
 
         let directives = ast.directives.clone();
 
-        let hir = AstLowerer::new()
+        let mut lowerer = AstLowerer::new();
+        for name in self.context.vars.keys() {
+            lowerer.declare_global(name);
+        }
+        let hir = lowerer
             .lower(ast)
             .map_err(|e| anyhow::anyhow!("lowering error: {e}"))?;
 
@@ -121,6 +125,8 @@ impl Repl {
         executor
             .run(&plan)
             .map_err(|e| anyhow::anyhow!("execution error: {e}"))?;
+
+        self.context = executor.context;
 
         Ok(())
     }
