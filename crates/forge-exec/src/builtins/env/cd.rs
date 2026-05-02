@@ -117,8 +117,10 @@ mod tests {
 
     #[test]
     fn test_cd_no_args_goes_home() {
+        let tmp = TempDir::new().unwrap();
         let mut ctx = ctx();
-        ctx.env.insert("HOME".to_string(), "/tmp".to_string());
+        ctx.env
+            .insert("HOME".to_string(), tmp.path().to_string_lossy().to_string());
         assert!(Cd.run(&[], &mut ctx).is_ok());
     }
 }
