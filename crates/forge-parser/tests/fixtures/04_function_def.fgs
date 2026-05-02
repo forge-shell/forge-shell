@@ -1,0 +1,11 @@
+fn greet(name) {
+    return name
+}
+
+fn add(a, b) {
+    return a + b
+}
+
+fn no_params() {
+    return 42
+}

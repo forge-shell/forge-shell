@@ -1,0 +1,35 @@
+Program {
+    directives: [],
+    stmts: [
+        Let {
+            name: "counter",
+            mutable: true,
+            ty: None,
+            value: Literal(
+                Int(
+                    0,
+                ),
+            ),
+        },
+        Let {
+            name: "name",
+            mutable: true,
+            ty: None,
+            value: Literal(
+                Str(
+                    "initial",
+                ),
+            ),
+        },
+        Let {
+            name: "immutable",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Int(
+                    42,
+                ),
+            ),
+        },
+    ],
+}

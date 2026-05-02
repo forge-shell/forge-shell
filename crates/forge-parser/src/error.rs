@@ -3,7 +3,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ParseError {
-    #[error("unexpected token {got} at like {line}, expected {expected}")]
+    #[error("unexpected token {got} at line {line}, expected {expected}")]
     UnexpectedToken {
         got: TokenKind,
         expected: String,
