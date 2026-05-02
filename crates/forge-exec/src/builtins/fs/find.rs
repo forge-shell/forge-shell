@@ -479,12 +479,8 @@ fn matches_expr(
 fn age_in_units(t: SystemTime, unit_secs: u64) -> i64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let then = t
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
+    let then = t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     i64::try_from((now - then) / unit_secs).unwrap_or(i64::MAX)
 }
 
