@@ -1,0 +1,41 @@
+Program {
+    directives: [],
+    stmts: [
+        Let {
+            name: "count",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Int(
+                    0,
+                ),
+            ),
+        },
+        While {
+            cond: Ident(
+                "count",
+            ),
+            body: Block {
+                stmts: [
+                    Let {
+                        name: "count",
+                        mutable: false,
+                        ty: None,
+                        value: BinaryOp {
+                            op: Add,
+                            lhs: Ident(
+                                "count",
+                            ),
+                            rhs: Literal(
+                                Int(
+                                    1,
+                                ),
+                            ),
+                        },
+                    },
+                ],
+                tail: None,
+            },
+        },
+    ],
+}

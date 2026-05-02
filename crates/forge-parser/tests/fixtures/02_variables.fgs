@@ -1,0 +1,4 @@
+let name = "Forge"
+let version = 1
+let stable = true
+let pi = 3.14

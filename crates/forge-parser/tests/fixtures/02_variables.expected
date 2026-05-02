@@ -1,0 +1,45 @@
+Program {
+    directives: [],
+    stmts: [
+        Let {
+            name: "name",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Str(
+                    "Forge",
+                ),
+            ),
+        },
+        Let {
+            name: "version",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Int(
+                    1,
+                ),
+            ),
+        },
+        Let {
+            name: "stable",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Bool(
+                    true,
+                ),
+            ),
+        },
+        Let {
+            name: "pi",
+            mutable: false,
+            ty: None,
+            value: Literal(
+                Float(
+                    3.14,
+                ),
+            ),
+        },
+    ],
+}

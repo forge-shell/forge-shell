@@ -1,0 +1,11 @@
+let x = 10
+
+if x {
+    let msg = "truthy"
+}
+
+if x {
+    let a = 1
+} else {
+    let a = 2
+}
