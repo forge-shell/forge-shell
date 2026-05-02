@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+forge-lexer = { path = "../forge-lexer" }
+forge-parser = { path = "../forge-parser" }
+forge-hir = { path = "../forge-hir" }
+forge-backend = { path = "../forge-backend" }
+forge-exec = { path = "../forge-exec" }
+rustyline = "18.0.0"
+anyhow.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
