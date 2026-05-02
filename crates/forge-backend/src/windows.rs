@@ -26,9 +26,9 @@ impl PlatformBackend for WindowsBackend {
 
     fn resolve_command(&self, name: &str) -> Result<String, BackendError> {
         if is_builtin(name) {
-            Err(BackendError::CommandNotFound {
+            return Err(BackendError::CommandNotFound {
                 command: name.to_string(),
-            })
+            });
         }
 
         let path = std::path::Path::new(name);
@@ -53,7 +53,7 @@ impl PlatformBackend for WindowsBackend {
         })
     }
 
-    fn expand_path(&self, path: &str, _env: &HashMap<String, String>) -> String {
+    fn expand_path(&self, path: &str, env: &HashMap<String, String>) -> String {
         if path == "~" {
             return env
                 .get("USERPROFILE")
@@ -66,7 +66,7 @@ impl PlatformBackend for WindowsBackend {
             }
         }
         let after_dollar = expand_dollar_vars(path, env);
-        expand_env_vars(&after_dollar, env)
+        expand_percent_vars(&after_dollar, env)
     }
 
     fn path_separator(&self) -> &'static str {
