@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/forge-types", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-builtins", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
+members = [".", "crates/forge-types", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
 
 [workspace.dependencies]
 # Internal crates
@@ -11,7 +11,6 @@ forge-parser   = { path = "crates/forge-parser" }
 forge-hir      = { path = "crates/forge-hir" }
 forge-backend  = { path = "crates/forge-backend" }
 forge-exec     = { path = "crates/forge-exec" }
-forge-builtins = { path = "crates/forge-builtins" }
 forge-repl     = { path = "crates/forge-repl" }
 forge-plugin   = { path = "crates/forge-plugin" }
 forge-agent    = { path = "crates/forge-agent" }
@@ -21,6 +20,9 @@ thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"

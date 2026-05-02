@@ -1,6 +1,7 @@
 use crate::lower::HirLowerer;
 use crate::{PlatformBackend, error::BackendError, plan::ExecutionPlan};
 use forge_hir::HirProgram;
+use forge_types::BUILTIN_NAMES;
 use std::collections::HashMap;
 
 pub struct UnixBackend;
@@ -80,10 +81,7 @@ impl PlatformBackend for UnixBackend {
 }
 
 fn is_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "echo" | "cd" | "pwd" | "ls" | "mkdir" | "rm" | "cp" | "mv" | "env" | "exit" | "which"
-    )
+    BUILTIN_NAMES.contains(&name)
 }
 
 fn expand_env_vars(path: &str, env: &HashMap<String, String>) -> String {

@@ -1,6 +1,7 @@
 use crate::lower::HirLowerer;
 use crate::{PlatformBackend, error::BackendError, plan::ExecutionPlan};
 use forge_hir::HirProgram;
+use forge_types::BUILTIN_NAMES;
 use std::collections::HashMap;
 
 pub struct WindowsBackend;
@@ -75,6 +76,10 @@ impl PlatformBackend for WindowsBackend {
     fn platform_name(&self) -> &'static str {
         "windows"
     }
+}
+
+fn is_builtin(name: &str) -> bool {
+    BUILTIN_NAMES.contains(&name)
 }
 
 fn expand_dollar_vars(path: &str, env: &HashMap<String, String>) -> String {

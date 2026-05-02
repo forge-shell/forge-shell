@@ -8,9 +8,9 @@ use crate::error::BackendError;
 use crate::plan::ExecutionPlan;
 use forge_hir::HirProgram;
 
-mod error;
-mod lower;
-mod plan;
+pub mod error;
+pub mod lower;
+pub mod plan;
 #[cfg(not(windows))]
 pub mod unix;
 

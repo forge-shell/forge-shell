@@ -49,3 +49,21 @@ impl Span {
         }
     }
 }
+
+/// The canonical list of all `ForgeScript` built-in command names.
+/// Both `forge-backend` and `forge-exec` import from here.
+/// Add new built-ins here first — the rest of the codebase follows.
+pub const BUILTIN_NAMES: &[&str] = &[
+    // File System (13)
+    "ls", "tree", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "find", "stat", "du", "df", "hash",
+    // Text & Streams (12)
+    "cat", "echo", "grep", "diff", "head", "tail", "sort", "uniq", "wc", "jq", "yq", "tq",
+    // Environment & Process (7)
+    "env", "set", "unset", "which", "exit", "pwd", "cd",
+];
+
+/// Returns true if the given name is a `ForgeScript` built-in command.
+#[must_use]
+pub fn is_builtin(name: &str) -> bool {
+    BUILTIN_NAMES.contains(&name)
+}

@@ -23,6 +23,8 @@ impl<'a> HirLowerer<'a> {
         Self { backend }
     }
 
+    /// # Errors
+    /// Returns `BackendError` if any statement fails to lower.
     pub fn lower_program(&self, program: &HirProgram) -> Result<ExecutionPlan, BackendError> {
         let mut ops = Vec::new();
 
@@ -38,6 +40,8 @@ impl<'a> HirLowerer<'a> {
         Ok(ExecutionPlan::new(ops))
     }
 
+    /// # Errors
+    /// Returns `BackendError` if the statement cannot be lowered.
     pub fn lower_stmt(&self, stmt: &HirStmt) -> Result<Vec<Op>, BackendError> {
         match stmt {
             HirStmt::Bind {
@@ -168,6 +172,8 @@ impl<'a> HirLowerer<'a> {
         }
     }
 
+    /// # Errors
+    /// Returns `BackendError` if the expression cannot be converted to a `Value`.
     pub fn lower_expr_to_value(expr: &HirExpr) -> Result<Value, BackendError> {
         match expr {
             HirExpr::Literal(lit) => Ok(Self::lower_literal(lit)),
