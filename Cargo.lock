@@ -145,6 +145,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cargo-husky",
+ "forge-repl",
  "tracing",
  "tracing-subscriber",
 ]

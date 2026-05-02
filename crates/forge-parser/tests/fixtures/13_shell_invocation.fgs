@@ -1,0 +1,5 @@
+git status
+ls -la
+git commit -m "fix typo"
+echo $HOME
+cargo build --release

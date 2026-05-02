@@ -1,1 +1,33 @@
-PARSE_ERROR: unexpected token "Hello, World!" at line 2, expected newline or semicolon
+Program {
+    directives: [
+        Directive {
+            kind: UnixShebang(
+                "/usr/bin/env forge",
+            ),
+            span: Span {
+                start: 0,
+                end: 20,
+                line: 1,
+                col: 1,
+            },
+        },
+    ],
+    stmts: [
+        ExprStmt(
+            Call {
+                callee: Ident(
+                    "echo",
+                ),
+                args: [
+                    Positional(
+                        Literal(
+                            Str(
+                                "Hello, World!",
+                            ),
+                        ),
+                    ),
+                ],
+            },
+        ),
+    ],
+}

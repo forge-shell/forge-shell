@@ -271,10 +271,53 @@ impl Parser {
         let mut args = Vec::new();
         self.skip_newlines();
         while !self.check_kind(&TokenKind::RParen) && !self.check_kind(&TokenKind::Eof) {
-            // Named argument: `name: value` (peek one ahead)
-            let arg = if matches!(self.peek_kind(), TokenKind::Ident(_))
+            // Flag syntax: `--long-flag` or `-s` where the flag is unambiguously
+            // not an arithmetic negation (i.e. followed directly by `,` or `)`).
+            //
+            // `--ident` → positional string `"--ident"`
+            // `-ident`  → positional string `"-ident"`
+            //
+            // We only promote to a flag when token after the ident is `,` or `)`
+            // so that `-n + 1` is still parsed as arithmetic.
+            let arg = if self.check_kind(&TokenKind::Minus)
+                && self.peek_kind_at(1) == &TokenKind::Minus
+            {
+                if let TokenKind::Ident(name) = self.peek_kind_at(2).clone() {
+                    let after = self.peek_kind_at(3);
+                    if matches!(
+                        after,
+                        TokenKind::Comma | TokenKind::RParen | TokenKind::Newline | TokenKind::Eof
+                    ) {
+                        self.advance(); // first -
+                        self.advance(); // second -
+                        self.advance(); // ident
+                        Arg::Positional(Expr::Literal(Literal::Str(format!("--{name}"))))
+                    } else {
+                        Arg::Positional(self.parse_expression(0)?)
+                    }
+                } else {
+                    Arg::Positional(self.parse_expression(0)?)
+                }
+            } else if self.check_kind(&TokenKind::Minus) {
+                if let TokenKind::Ident(name) = self.peek_kind_at(1).clone() {
+                    let after = self.peek_kind_at(2);
+                    if matches!(
+                        after,
+                        TokenKind::Comma | TokenKind::RParen | TokenKind::Newline | TokenKind::Eof
+                    ) {
+                        self.advance(); // -
+                        self.advance(); // ident
+                        Arg::Positional(Expr::Literal(Literal::Str(format!("-{name}"))))
+                    } else {
+                        Arg::Positional(self.parse_expression(0)?)
+                    }
+                } else {
+                    Arg::Positional(self.parse_expression(0)?)
+                }
+            } else if matches!(self.peek_kind(), TokenKind::Ident(_))
                 && self.peek_kind_at(1) == &TokenKind::Colon
             {
+                // Named argument: `name: value`
                 let name = self.expect_identifier()?;
                 self.advance(); // consume ':'
                 let value = self.parse_expression(0)?;
@@ -466,6 +509,87 @@ impl Parser {
         }
     }
 
+    // --- Shell-style command invocation ---
+    //
+    // At statement level, `cmd arg -flag "str" $VAR` is equivalent to
+    // `cmd(arg, -flag, "str", $VAR)`. This is a statement-level-only rule;
+    // inside expressions, function-call syntax is required.
+
+    /// Returns true if the current position looks like a shell-style invocation:
+    /// `Ident` at offset 0 followed by a shell-arg-start token at offset 1.
+    fn is_shell_invocation(&self) -> bool {
+        if !matches!(self.peek_kind(), TokenKind::Ident(_)) {
+            return false;
+        }
+        match self.peek_kind_at(1) {
+            TokenKind::StringLit(_)
+            | TokenKind::InterpolatedStr(_)
+            | TokenKind::Integer(_)
+            | TokenKind::Float(_)
+            | TokenKind::Bool(_)
+            | TokenKind::EnvVar(_)
+            | TokenKind::Ident(_) => true,
+            // `-flag` or `--flag`: only a flag-start when followed by ident/minus
+            TokenKind::Minus => {
+                matches!(self.peek_kind_at(2), TokenKind::Ident(_) | TokenKind::Minus)
+            }
+            _ => false,
+        }
+    }
+
+    /// Collect shell-style arguments until newline / semicolon / EOF / `|`.
+    ///
+    /// - Bareword `ident`     → string literal `"ident"`
+    /// - `-flag`              → string literal `"-flag"`
+    /// - `--flag`             → string literal `"--flag"`
+    /// - `$VAR`               → `Expr::EnvVar`
+    /// - string / number / bool → parsed as primary
+    fn parse_shell_args(&mut self) -> Result<Vec<Arg>, ParseError> {
+        let mut args = Vec::new();
+        loop {
+            if self.is_newline_or_eof()
+                || self.check_kind(&TokenKind::Pipe)
+                || self.check_kind(&TokenKind::Semicolon)
+            {
+                break;
+            }
+            let arg = match self.peek_kind().clone() {
+                TokenKind::Ident(name) => {
+                    self.advance();
+                    Arg::Positional(Expr::Literal(Literal::Str(name)))
+                }
+                TokenKind::EnvVar(name) => {
+                    self.advance();
+                    Arg::Positional(Expr::EnvVar(name))
+                }
+                TokenKind::Minus => {
+                    if self.peek_kind_at(1) == &TokenKind::Minus {
+                        // `--long-flag`
+                        if let TokenKind::Ident(name) = self.peek_kind_at(2).clone() {
+                            self.advance(); // -
+                            self.advance(); // -
+                            self.advance(); // ident
+                            Arg::Positional(Expr::Literal(Literal::Str(format!("--{name}"))))
+                        } else {
+                            break; // bare `--`, stop
+                        }
+                    } else if let TokenKind::Ident(name) = self.peek_kind_at(1).clone() {
+                        // `-flag`
+                        self.advance(); // -
+                        self.advance(); // ident
+                        Arg::Positional(Expr::Literal(Literal::Str(format!("-{name}"))))
+                    } else {
+                        break; // bare `-`, stop
+                    }
+                }
+                // string / int / float / bool — reuse primary parser
+                _ => Arg::Positional(self.parse_primary()?),
+            };
+            args.push(arg);
+        }
+        Ok(args)
+    }
+
     // --- Statements ---
 
     fn parse_statement(&mut self) -> Result<Stmt, ParseError> {
@@ -481,6 +605,38 @@ impl Parser {
                 Ok(Stmt::ExprStmt(expr))
             }
             TokenKind::While => self.parse_while(),
+            // Shell-style invocation: `cmd arg -flag "str"` at statement level
+            TokenKind::Ident(_) if self.is_shell_invocation() => {
+                let name = self.expect_identifier()?;
+                let args = self.parse_shell_args()?;
+                let mut expr = Expr::Call {
+                    callee: Box::new(Expr::Ident(name)),
+                    args,
+                };
+                // Pipe chain: `cmd1 args | cmd2 args | ...`
+                while self.check_kind(&TokenKind::Pipe) {
+                    self.advance(); // consume `|`
+                    let right = if matches!(self.peek_kind(), TokenKind::Ident(_))
+                        && self.is_shell_invocation()
+                    {
+                        let rname = self.expect_identifier()?;
+                        let rargs = self.parse_shell_args()?;
+                        Expr::Call {
+                            callee: Box::new(Expr::Ident(rname)),
+                            args: rargs,
+                        }
+                    } else {
+                        self.parse_expression(0)?
+                    };
+                    expr = Expr::BinaryOp {
+                        op: BinaryOp::Pipe,
+                        lhs: Box::new(expr),
+                        rhs: Box::new(right),
+                    };
+                }
+                self.consume_statement_end()?;
+                Ok(Stmt::ExprStmt(expr))
+            }
             _ => {
                 let expr = self.parse_expression(0)?;
 

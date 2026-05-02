@@ -172,6 +172,11 @@ fn fixture_12_mutable_variables() {
     run_fixture("12_mutable_variables");
 }
 
+#[test]
+fn fixture_13_shell_invocation() {
+    run_fixture("13_shell_invocation");
+}
+
 // --- error fixtures ---
 #[test]
 fn fixture_err_01_invalid_token() {

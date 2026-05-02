@@ -8,7 +8,7 @@
 use crate::{
     PlatformBackend,
     error::BackendError,
-    plan::{BinOpKind, ExecutionPlan, Op, StdioConfig, Value},
+    plan::{BinOpKind, ExecutionPlan, Op, StdioConfig, UnaryOpKind, Value},
 };
 use forge_hir::{HirBinOp, HirExpr, HirLiteral, HirProgram, HirStmt, HirUnaryOp};
 
@@ -50,12 +50,16 @@ impl<'a> HirLowerer<'a> {
                 value,
                 ..
             } => {
-                let val = Self::lower_expr_to_value(value);
-                Ok(vec![Op::BindVar {
+                // Decompose the value into optional prep ops + a final Value.
+                // For complex expressions like `n - 1` we emit Op::Bin first so
+                // the executor has the result available as a temp var.
+                let (mut ops, val) = Self::decompose_expr_for_bind(name, value)?;
+                ops.push(Op::BindVar {
                     name: name.clone(),
                     mutable: *mutable,
-                    value: val?,
-                }])
+                    value: val,
+                });
+                Ok(ops)
             }
 
             HirStmt::Eval { expr, .. } => self.lower_expr_to_ops(expr),
@@ -169,6 +173,79 @@ impl<'a> HirLowerer<'a> {
                     no_newline: false,
                 }])
             }
+        }
+    }
+
+    /// Decompose an expression for use as the RHS of a `Bind` statement.
+    ///
+    /// Returns `(prep_ops, value)` where `prep_ops` must be executed first and
+    /// `value` is the `Value` to pass to `Op::BindVar`.
+    ///
+    /// For simple expressions (literals, var/env refs) this is `([], simple_val)`.
+    /// For binary/unary ops involving variable references it emits an `Op::Bin`
+    /// or `Op::Unary` that writes the result to a deterministic temp var, then
+    /// returns `Value::VarRef(temp)`.
+    fn decompose_expr_for_bind(
+        dest: &str,
+        expr: &HirExpr,
+    ) -> Result<(Vec<Op>, Value), BackendError> {
+        match expr {
+            // Simple passthrough — no prep needed.
+            HirExpr::Literal(_) | HirExpr::Var { .. } | HirExpr::EnvVar { .. } => {
+                Ok((vec![], Self::lower_expr_to_value(expr)?))
+            }
+
+            HirExpr::BinOp {
+                op, left, right, ..
+            } => {
+                let l = Self::lower_expr_to_value(left)?;
+                let r = Self::lower_expr_to_value(right)?;
+                // Try constant folding first — avoids the extra op.
+                if let Some(folded) = Self::try_fold_binop(op, &l, &r) {
+                    return Ok((vec![], folded));
+                }
+                let tmp = format!("__bin_{dest}__");
+                let op_kind = Self::lower_binop(op);
+                Ok((
+                    vec![Op::Bin {
+                        result_var: tmp.clone(),
+                        op: op_kind,
+                        left: l,
+                        right: r,
+                    }],
+                    Value::VarRef(tmp),
+                ))
+            }
+
+            HirExpr::UnaryOp { op, operand, .. } => {
+                let val = Self::lower_expr_to_value(operand)?;
+                // Try constant folding.
+                let folded = match (op, &val) {
+                    (HirUnaryOp::Neg, Value::Int(n)) => Some(Value::Int(-n)),
+                    (HirUnaryOp::Neg, Value::Float(f)) => Some(Value::Float(-f)),
+                    (HirUnaryOp::Not, Value::Bool(b)) => Some(Value::Bool(!b)),
+                    _ => None,
+                };
+                if let Some(f) = folded {
+                    return Ok((vec![], f));
+                }
+                let tmp = format!("__unary_{dest}__");
+                let op_kind = match op {
+                    HirUnaryOp::Neg => UnaryOpKind::Neg,
+                    HirUnaryOp::Not => UnaryOpKind::Not,
+                };
+                Ok((
+                    vec![Op::Unary {
+                        result_var: tmp.clone(),
+                        op: op_kind,
+                        operand: val,
+                    }],
+                    Value::VarRef(tmp),
+                ))
+            }
+
+            // Fall back to the existing value lowerer for other cases.
+            other => Ok((vec![], Self::lower_expr_to_value(other)?)),
         }
     }
 

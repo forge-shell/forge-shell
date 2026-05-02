@@ -302,13 +302,12 @@ impl AstLowerer {
             }
 
             Expr::Call { callee, args } => {
+                // Command/function names are resolved at runtime (builtin registry
+                // or PATH lookup). We do NOT require the callee to be in the HIR
+                // scope — that check is correct for variable references but wrong
+                // for command invocations where the name is only known at runtime.
                 let callee_name = match *callee {
-                    Expr::Ident(name) => {
-                        if !self.is_declared(&name) {
-                            return Err(LowerError::UndefinedVariable { name, line: 0 });
-                        }
-                        name
-                    }
+                    Expr::Ident(name) => name,
                     other => {
                         return Err(LowerError::Unsupported {
                             reason: format!("only simple calls are supported, got: {other:?}"),
@@ -451,6 +450,16 @@ impl AstLowerer {
                 reason: "saturating / wrapping arithmetic is not yet lowered to HIR".to_string(),
                 line: 0,
             }),
+        }
+    }
+
+    /// Declare a name in the global (outermost) scope.
+    ///
+    /// Use this to seed the lowerer with variables that already exist in the
+    /// shell context before lowering the next REPL command.
+    pub fn declare_global(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.first_mut() {
+            scope.insert(name.to_string());
         }
     }
 
