@@ -103,6 +103,8 @@ impl Repl {
             .parse()
             .map_err(|e| anyhow::anyhow!("parser error: {e}"))?;
 
+        let directives = ast.directives.clone();
+
         let hir = AstLowerer::new()
             .lower(ast)
             .map_err(|e| anyhow::anyhow!("lowering error: {e}"))?;
@@ -113,6 +115,9 @@ impl Repl {
             .map_err(|e| anyhow::anyhow!("platform error: {e}"))?;
 
         let mut executor = Executor::new(self.context.clone());
+        executor
+            .enforce_directives(&directives)
+            .map_err(|e| anyhow::anyhow!("directive error: {e}"))?;
         executor
             .run(&plan)
             .map_err(|e| anyhow::anyhow!("execution error: {e}"))?;
