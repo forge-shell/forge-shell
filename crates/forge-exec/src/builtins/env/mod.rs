@@ -1,4 +1,5 @@
 mod cd;
+#[allow(clippy::module_inception)]
 mod env;
 mod exit;
 mod pwd;
