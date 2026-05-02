@@ -304,16 +304,14 @@ fn get_inode(_path: &Path) -> u64 {
     0
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(path).is_ok_and(|m| m.mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).is_ok_and(|m| m.mode() & 0o111 != 0)
+}
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    false
 }
 
 fn resolve(path: &str, cwd: &Path) -> PathBuf {
