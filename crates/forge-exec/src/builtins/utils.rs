@@ -1,5 +1,6 @@
 /// Returns true if `flag` is present in `args`.
 /// Handles combined single-char flags: `-la` satisfies both `-l` and `-a`.
+#[must_use]
 pub fn has_flag(args: &[String], flag: &str) -> bool {
     for arg in args {
         if arg == flag {
@@ -56,6 +57,7 @@ pub fn positional_args<'a>(args: &'a [String], value_flags: &[&str]) -> Vec<&'a 
 }
 
 /// Format bytes as human-readable using 1024 base (K/M/G/T).
+#[must_use]
 pub fn format_size_human(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "K", "M", "G", "T", "P"];
     if bytes < 1024 {
@@ -72,6 +74,7 @@ pub fn format_size_human(bytes: u64) -> String {
 }
 
 /// Format bytes as human-readable using 1000 base (SI: KB/MB/GB).
+#[must_use]
 pub fn format_size_si(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     if bytes < 1000 {
@@ -88,6 +91,7 @@ pub fn format_size_si(bytes: u64) -> String {
 }
 
 /// Format a `SystemTime` as `YYYY-MM-DD HH:MM:SS` (UTC).
+#[must_use]
 pub fn format_time(st: std::time::SystemTime) -> String {
     #[allow(clippy::cast_possible_wrap)]
     let secs = match st.duration_since(std::time::UNIX_EPOCH) {
@@ -116,6 +120,7 @@ fn secs_to_civil(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
 
 /// Format Unix mode bits as a 10-char permission string (e.g. `drwxr-xr-x`).
 #[cfg(unix)]
+#[must_use]
 pub fn format_mode(mode: u32, is_dir: bool, is_link: bool) -> String {
     let ft = if is_link {
         'l'
@@ -144,6 +149,7 @@ pub fn format_mode(mode: u32, is_dir: bool, is_link: bool) -> String {
 }
 
 #[cfg(not(unix))]
+#[must_use]
 pub fn format_mode(_mode: u32, is_dir: bool, is_link: bool) -> String {
     if is_link {
         "lrwxrwxrwx".to_string()
@@ -155,6 +161,7 @@ pub fn format_mode(_mode: u32, is_dir: bool, is_link: bool) -> String {
 }
 
 /// Simple glob match: supports `*` (any sequence) and `?` (any single char).
+#[must_use]
 pub fn glob_match(pattern: &str, name: &str) -> bool {
     glob_inner(pattern.as_bytes(), name.as_bytes())
 }
@@ -169,6 +176,9 @@ fn glob_inner(pat: &[u8], s: &[u8]) -> bool {
 }
 
 /// Parse an optional `-n N` / `--lines=N` value from args, returning the default if absent.
+///
+/// # Errors
+/// Returns a `String` error if the count argument cannot be parsed as a `usize`.
 #[allow(dead_code)]
 pub fn parse_count_flag(
     args: &[String],

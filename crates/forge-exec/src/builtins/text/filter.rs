@@ -4,6 +4,9 @@ use serde_json::Value;
 
 /// Evaluate a filter string against an input value.
 /// Returns the list of output values (a filter may produce multiple outputs).
+///
+/// # Errors
+/// Returns a `String` describing the error if the filter is invalid or evaluation fails.
 #[allow(clippy::needless_pass_by_value)]
 pub fn eval_filter(
     filter: &str,
