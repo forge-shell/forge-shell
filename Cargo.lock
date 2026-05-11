@@ -183,6 +183,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "forge-backend",
+ "forge-exec",
+ "forge-hir",
+ "forge-lexer",
+ "forge-parser",
+ "forge-types",
+]
+
+[[package]]
 name = "forge-exec"
 version = "0.1.0"
 dependencies = [
@@ -251,6 +263,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "forge-backend",
+ "forge-diagnostics",
  "forge-exec",
  "forge-hir",
  "forge-lexer",

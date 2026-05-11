@@ -51,13 +51,14 @@ fn run_fixture(name: &str) {
 
     let actual = parse_fixture(&source);
 
+    if std::env::var("UPDATE_FIXTURES").is_ok() {
+        std::fs::write(&expected_path, &actual)
+            .unwrap_or_else(|e| panic!("failed to write expected: {e}"));
+        println!("Generated: {}", expected_path.display());
+        return;
+    }
+
     if !expected_path.exists() {
-        if std::env::var("UPDATE_FIXTURES").is_ok() {
-            std::fs::write(&expected_path, &actual)
-                .unwrap_or_else(|e| panic!("failed to write expected: {e}"));
-            println!("Generated: {}", expected_path.display());
-            return;
-        }
         panic!(
             "Missing expected file: {}\n\
              Run with UPDATE_FIXTURES=1 to generate it.\n\

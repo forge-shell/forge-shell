@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/forge-types", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
+members = [".", "crates/forge-types", "crates/forge-lexer", "crates/forge-ast", "crates/forge-parser", "crates/forge-hir", "crates/forge-backend", "crates/forge-exec", "crates/forge-diagnostics", "crates/forge-repl", "crates/forge-plugin", "crates/forge-agent"]
 
 [workspace.dependencies]
 # Internal crates
@@ -10,8 +10,9 @@ forge-ast      = { path = "crates/forge-ast" }
 forge-parser   = { path = "crates/forge-parser" }
 forge-hir      = { path = "crates/forge-hir" }
 forge-backend  = { path = "crates/forge-backend" }
-forge-exec     = { path = "crates/forge-exec" }
-forge-repl     = { path = "crates/forge-repl" }
+forge-exec         = { path = "crates/forge-exec" }
+forge-diagnostics  = { path = "crates/forge-diagnostics" }
+forge-repl         = { path = "crates/forge-repl" }
 forge-plugin   = { path = "crates/forge-plugin" }
 forge-agent    = { path = "crates/forge-agent" }
 
