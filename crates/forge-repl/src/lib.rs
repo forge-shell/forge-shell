@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use forge_backend::platform_backend;
+use forge_diagnostics::{Diagnostic, DiagnosticRenderer};
 use forge_exec::builtins::BuiltinRegistry;
 use forge_exec::{Executor, ShellContext};
 use forge_hir::AstLowerer;
@@ -65,9 +66,7 @@ impl Repl {
                         break;
                     }
 
-                    if let Err(e) = self.eval(&line) {
-                        eprintln!("forge: {e}");
-                    }
+                    self.eval(&line);
                 }
                 Err(rustyline::error::ReadlineError::Interrupted) => {
                     // Ctrl+C — clear line, continue
@@ -93,42 +92,42 @@ impl Repl {
         Ok(())
     }
 
-    fn eval(&mut self, source: &str) -> Result<()> {
-        // Eval pipeline
-        let tokens = Lexer::new(source)
-            .tokenise()
-            .map_err(|e| anyhow::anyhow!("lexer error: {e}"))?;
+    fn eval(&mut self, source: &str) {
+        let renderer = DiagnosticRenderer::new()
+            .with_source("<input>", source)
+            .with_color(true);
 
-        let ast = Parser::new(tokens)
-            .parse()
-            .map_err(|e| anyhow::anyhow!("parser error: {e}"))?;
+        macro_rules! try_stage {
+            ($result:expr) => {
+                match $result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let d = Diagnostic::from(e);
+                        eprint!("{}", renderer.render(&d));
+                        return;
+                    }
+                }
+            };
+        }
 
+        let tokens = try_stage!(Lexer::new(source).tokenise());
+        let ast = try_stage!(Parser::new(tokens).parse());
         let directives = ast.directives.clone();
 
         let mut lowerer = AstLowerer::new();
         for name in self.context.vars.keys() {
             lowerer.declare_global(name);
         }
-        let hir = lowerer
-            .lower(ast)
-            .map_err(|e| anyhow::anyhow!("lowering error: {e}"))?;
+        let hir = try_stage!(lowerer.lower(ast));
 
         let platform = platform_backend();
-        let plan = platform
-            .lower(&hir)
-            .map_err(|e| anyhow::anyhow!("platform error: {e}"))?;
+        let plan = try_stage!(platform.lower(&hir));
 
         let mut executor = Executor::new(self.context.clone());
-        executor
-            .enforce_directives(&directives)
-            .map_err(|e| anyhow::anyhow!("directive error: {e}"))?;
-        executor
-            .run(&plan)
-            .map_err(|e| anyhow::anyhow!("execution error: {e}"))?;
+        try_stage!(executor.enforce_directives(&directives));
+        try_stage!(executor.run(&plan));
 
         self.context = executor.context;
-
-        Ok(())
     }
 
     fn make_prompt(&self) -> String {

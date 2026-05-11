@@ -38,6 +38,7 @@ impl Parser {
                 return Err(ParseError::DirectiveAfterStatement {
                     key,
                     line: self.current_line(),
+                    col: self.current_col(),
                 });
             }
 
@@ -76,6 +77,10 @@ impl Parser {
         self.tokens.get(self.pos).map_or(0, |t| t.span.line)
     }
 
+    fn current_col(&self) -> usize {
+        self.tokens.get(self.pos).map_or(0, |t| t.span.col)
+    }
+
     fn check_kind(&self, kind: &TokenKind) -> bool {
         self.peek_kind() == kind
     }
@@ -100,6 +105,7 @@ impl Parser {
                     got,
                     expected: expected.to_string(),
                     line,
+                    col: self.current_col(),
                 })
             }
         }
@@ -118,6 +124,7 @@ impl Parser {
                 got: other,
                 expected: "identifier".to_string(),
                 line: self.current_line(),
+                col: self.current_col(),
             }),
         }
     }
@@ -149,10 +156,12 @@ impl Parser {
             _ => {
                 let got = self.peek_kind().clone();
                 let line = self.current_line();
+                let col = self.current_col();
                 Err(ParseError::UnexpectedToken {
                     got,
                     expected: "newline or semicolon".to_string(),
                     line,
+                    col,
                 })
             }
         }
@@ -958,6 +967,7 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         let line = self.current_line();
+        let col = self.current_col();
 
         match self.peek_kind().clone() {
             TokenKind::Integer(n) => {
@@ -1021,7 +1031,11 @@ impl Parser {
             TokenKind::Eof => Err(ParseError::UnexpectedEof {
                 expected: "expression".to_string(),
             }),
-            other => Err(ParseError::InvalidExpression { got: other, line }),
+            other => Err(ParseError::InvalidExpression {
+                got: other,
+                line,
+                col,
+            }),
         }
     }
 

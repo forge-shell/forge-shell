@@ -1,0 +1,12 @@
+[package]
+name = "forge-diagnostics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+forge-types   = { workspace = true }
+forge-lexer   = { workspace = true }
+forge-parser  = { workspace = true }
+forge-hir     = { workspace = true }
+forge-backend = { workspace = true }
+forge-exec    = { workspace = true }

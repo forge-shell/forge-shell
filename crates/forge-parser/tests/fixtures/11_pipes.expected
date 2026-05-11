@@ -1,1 +1,1 @@
-PARSE_ERROR: unexpected token foo at line 1, expected newline or semicolon
+PARSE_ERROR: unexpected token foo at line 1:11, expected newline or semicolon
